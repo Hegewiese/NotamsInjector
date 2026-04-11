@@ -4,6 +4,8 @@ MSFS Actions panel — shows what has been (or will be) applied in the sim.
 
 from __future__ import annotations
 
+from typing import Optional
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
@@ -16,14 +18,27 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.airports.lookup import _haversine_nm
 from src.notam.models import MsfsAction
 
-COLUMNS = ["NOTAM", "Airport", "Action", "Applied", "Applied At", "Lit", "Note"]
+COLUMNS = [
+    "NOTAM",
+    "Airport",
+    "Action",
+    "Applied",
+    "Applied At",
+    "Distance (nm)",
+    "Lit",
+    "Note",
+]
 
 
 class ActionsPanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._actions: list[MsfsAction] = []
+        self._last_lat: Optional[float] = None
+        self._last_lon: Optional[float] = None
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -56,7 +71,10 @@ class ActionsPanel(QWidget):
             f"{applied} applied / {len(actions)} total action(s)"
         )
 
-        for row, action in enumerate(actions):
+        self._actions = list(actions)
+        self._sort_actions()
+
+        for row, action in enumerate(self._actions):
             self._table.insertRow(row)
 
             if action.error:
@@ -69,8 +87,18 @@ class ActionsPanel(QWidget):
                 color = "#ffaa44"
                 status = "Pending"
 
-            at_str  = action.applied_at.strftime("%H:%Mz") if action.applied_at else "-"
-            note    = action.error or ""
+            at_str = action.applied_at.strftime("%H:%Mz") if action.applied_at else "-"
+            distance = self._calculate_distance(action)
+            distance_str = "—" if distance is None else f"{distance:.1f}"
+
+            note_parts = []
+            if action.error:
+                note_parts.append(action.error)
+            if action.action_type == "place_obstacle":
+                description = action.params.get("description")
+                if description:
+                    note_parts.append(description)
+            note = " — ".join(note_parts)
             lit_val = action.params.get("lit")
             lit_str = "Yes" if lit_val is True else ("No" if lit_val is False else "-")
 
@@ -80,6 +108,7 @@ class ActionsPanel(QWidget):
                 action.action_type,
                 status,
                 at_str,
+                distance_str,
                 lit_str,
                 note,
             ]
@@ -87,3 +116,29 @@ class ActionsPanel(QWidget):
                 item = QTableWidgetItem(text)
                 item.setForeground(QColor(color))
                 self._table.setItem(row, col, item)
+
+    def _calculate_distance(self, action: MsfsAction) -> Optional[float]:
+        if self._last_lat is None or self._last_lon is None:
+            return None
+        lat = action.params.get("lat")
+        lon = action.params.get("lon")
+        if lat is None or lon is None:
+            return None
+        return _haversine_nm(self._last_lat, self._last_lon, lat, lon)
+
+    def _sort_actions(self) -> None:
+        def sort_key(action: MsfsAction) -> float:
+            if action.params.get("lat") is None or action.params.get("lon") is None:
+                return float("inf")
+            if self._last_lat is None or self._last_lon is None:
+                return float("inf")
+            return self._calculate_distance(action) or float("inf")
+
+        self._actions.sort(key=sort_key)
+
+    def update_position(self, lat: float, lon: float, alt: float) -> None:
+        self._last_lat = lat
+        self._last_lon = lon
+        if self._actions:
+            self._sort_actions()
+            self.update_actions(self._actions)

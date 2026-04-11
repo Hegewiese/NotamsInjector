@@ -19,9 +19,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.airports.lookup import _haversine_nm
 from src.notam.models import Notam, NotamCondition, NotamSubject
 
-COLUMNS = ["ID", "Airport", "Subject", "Condition", "Valid From", "Valid To", "Description"]
+COLUMNS = [
+    "ID",
+    "Airport",
+    "Subject",
+    "Condition",
+    "Valid From",
+    "Valid To",
+    "Distance (nm)",
+    "Description",
+]
 
 CONDITION_COLORS: dict[NotamCondition, str] = {
     NotamCondition.UNSERVICEABLE: "#ff6b6b",
@@ -48,6 +58,9 @@ def _fmt_dt(dt: Optional[datetime]) -> str:
 class NotamTable(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._notams: list[Notam] = []
+        self._last_lat: Optional[float] = None
+        self._last_lon: Optional[float] = None
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -73,17 +86,34 @@ class NotamTable(QWidget):
         )
         layout.addWidget(self._table)
 
-    def update_notams(self, notams: list[Notam]) -> None:
+    def _fmt_distance(self, distance: Optional[float]) -> str:
+        return "—" if distance is None else f"{distance:.1f}"
+
+    def _calculate_distance(self, notam: Notam) -> Optional[float]:
+        if self._last_lat is None or self._last_lon is None:
+            return None
+        if notam.lat is None or notam.lon is None:
+            return None
+        return _haversine_nm(self._last_lat, self._last_lon, notam.lat, notam.lon)
+
+    def _sort_notams(self) -> None:
+        if self._last_lat is None or self._last_lon is None:
+            self._notams.sort(key=lambda n: n.id)
+            return
+
+        def sort_key(notam: Notam) -> float:
+            if notam.lat is None or notam.lon is None:
+                return float("inf")
+            return _haversine_nm(self._last_lat, self._last_lon, notam.lat, notam.lon)
+
+        self._notams.sort(key=sort_key)
+
+    def _render_table(self) -> None:
         self._table.setRowCount(0)
-
-        active = [n for n in notams if n.is_active]
-        self._count_label.setText(
-            f"{len(active)} active NOTAM(s)  ({len(notams)} total fetched)"
-        )
-
-        for row, notam in enumerate(active):
+        for row, notam in enumerate(self._notams):
             self._table.insertRow(row)
             color = CONDITION_COLORS.get(notam.condition, "#888888")
+            distance = self._calculate_distance(notam)
 
             cells = [
                 notam.id,
@@ -92,6 +122,7 @@ class NotamTable(QWidget):
                 notam.condition.name,
                 _fmt_dt(notam.valid_from),
                 _fmt_dt(notam.valid_to),
+                self._fmt_distance(distance),
                 notam.description[:80],
             ]
 
@@ -99,3 +130,18 @@ class NotamTable(QWidget):
                 item = QTableWidgetItem(text)
                 item.setForeground(QColor(color))
                 self._table.setItem(row, col, item)
+
+    def update_notams(self, notams: list[Notam]) -> None:
+        self._notams = [n for n in notams if n.is_active]
+        self._count_label.setText(
+            f"{len(self._notams)} active NOTAM(s)  ({len(notams)} total fetched)"
+        )
+        self._sort_notams()
+        self._render_table()
+
+    def update_position(self, lat: float, lon: float, alt: float) -> None:
+        self._last_lat = lat
+        self._last_lon = lon
+        if self._notams:
+            self._sort_notams()
+            self._render_table()

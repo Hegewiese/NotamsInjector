@@ -56,6 +56,13 @@ CREATE TABLE IF NOT EXISTS msfs_actions (
 );
 """
 
+_CREATE_AIRPORT_FETCHES = """
+CREATE TABLE IF NOT EXISTS airport_fetches (
+    icao            TEXT PRIMARY KEY,
+    last_fetched_at TEXT NOT NULL
+);
+"""
+
 
 def _notam_to_row(n: Notam) -> dict:
     return {
@@ -108,6 +115,7 @@ class NotamCache:
         self._db.row_factory = aiosqlite.Row
         await self._db.execute(_CREATE_NOTAMS)
         await self._db.execute(_CREATE_ACTIONS)
+        await self._db.execute(_CREATE_AIRPORT_FETCHES)
         await self._db.commit()
         logger.info(f"NOTAM cache initialised at {self.db_path}")
 
@@ -146,6 +154,54 @@ class NotamCache:
             )
         rows = await cur.fetchall()
         return [_row_to_notam(r) for r in rows]
+
+    async def get_active_notams_for_icaos(self, icao_codes: list[str]) -> list[Notam]:
+        """Return all still-valid cached NOTAMs for a set of ICAO codes."""
+        if not icao_codes:
+            return []
+        now = datetime.now(tz=timezone.utc).isoformat()
+        placeholders = ",".join("?" * len(icao_codes))
+        cur = await self._db.execute(
+            f"SELECT * FROM notams WHERE icao IN ({placeholders})"
+            f" AND valid_from<=? AND (valid_to IS NULL OR valid_to>=?)",
+            (*icao_codes, now, now),
+        )
+        rows = await cur.fetchall()
+        return [_row_to_notam(r) for r in rows]
+
+    async def get_stale_icaos(self, icao_codes: list[str], max_age_minutes: int) -> list[str]:
+        """Return ICAOs never fetched or fetched earlier than max_age_minutes."""
+        if not icao_codes:
+            return []
+
+        from datetime import timedelta
+
+        cutoff = (datetime.now(tz=timezone.utc) - timedelta(minutes=max_age_minutes)).isoformat()
+        placeholders = ",".join("?" * len(icao_codes))
+        cur = await self._db.execute(
+            f"SELECT icao FROM airport_fetches WHERE icao IN ({placeholders}) AND last_fetched_at >= ?",
+            (*icao_codes, cutoff),
+        )
+        rows = await cur.fetchall()
+        fresh_icaos = {str(r["icao"]) for r in rows}
+        return [icao for icao in icao_codes if icao not in fresh_icaos]
+
+    async def mark_airports_fetched(self, icao_codes: list[str]) -> None:
+        """Persist fetch time for airports, even if they returned zero NOTAMs."""
+        if not icao_codes:
+            return
+
+        now_iso = datetime.now(tz=timezone.utc).isoformat()
+        await self._db.executemany(
+            """
+            INSERT INTO airport_fetches(icao,last_fetched_at)
+            VALUES(?,?)
+            ON CONFLICT(icao) DO UPDATE SET
+              last_fetched_at=excluded.last_fetched_at
+            """,
+            [(icao, now_iso) for icao in icao_codes],
+        )
+        await self._db.commit()
 
     async def purge_expired(self, older_than_h: int = 24) -> int:
         """Delete NOTAMs that expired more than *older_than_h* hours ago."""

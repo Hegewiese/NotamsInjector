@@ -32,6 +32,12 @@ class Airport:
     lon: float
     type: str
     country: str
+    municipality: str
+    region: str
+    continent: str
+    elevation_ft: int | None
+    home_link: str
+    wikipedia_link: str
 
 
 def _haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -84,6 +90,13 @@ class AirportLookup:
                     lon = float(row["longitude_deg"])
                 except (ValueError, KeyError):
                     continue
+
+                elevation_ft: int | None
+                try:
+                    elevation_ft = int(float(row.get("elevation_ft", "")))
+                except (TypeError, ValueError):
+                    elevation_ft = None
+
                 self._airports.append(
                     Airport(
                         icao=icao,
@@ -92,6 +105,12 @@ class AirportLookup:
                         lon=lon,
                         type=row.get("type", ""),
                         country=row.get("iso_country", ""),
+                        municipality=row.get("municipality", ""),
+                        region=row.get("iso_region", ""),
+                        continent=row.get("continent", ""),
+                        elevation_ft=elevation_ft,
+                        home_link=row.get("home_link", ""),
+                        wikipedia_link=row.get("wikipedia_link", ""),
                     )
                 )
 

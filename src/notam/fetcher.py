@@ -68,11 +68,12 @@ class NotamsOnlineFetcher(BaseNotamFetcher):
     # notams.online returns 500 when too many concurrent or rapid requests arrive.
     _REQUEST_DELAY_S: float = 0.5
 
-    async def fetch(self, icao_codes: list[str]) -> list[str]:
+    async def fetch(self, icao_codes: list[str], progress_cb=None) -> list[str]:
         if not icao_codes:
             return []
 
         raw_notams: list[str] = []
+        total = len(icao_codes)
 
         async with httpx.AsyncClient(timeout=15) as client:
             for i, icao in enumerate(icao_codes):
@@ -85,11 +86,18 @@ class NotamsOnlineFetcher(BaseNotamFetcher):
                         logger.debug(f"[notams.online] {len(result)} NOTAMs for {icao}")
                 except Exception as exc:
                     logger.warning(f"[notams.online] Error for {icao}: {exc}")
+                finally:
+                    if progress_cb is not None:
+                        progress_cb(i + 1, total)
 
         return raw_notams
 
     async def _fetch_one(self, client: httpx.AsyncClient, icao: str) -> list[str]:
         resp = await client.get(self.BASE_URL, params={"location": icao})
+        if resp.status_code == 500:
+            # Retry once after a short back-off — notams.online returns 500 transiently
+            await asyncio.sleep(2.0)
+            resp = await client.get(self.BASE_URL, params={"location": icao})
         resp.raise_for_status()
         return _decode_notams_online(resp.text.strip())
 
@@ -108,15 +116,16 @@ class CheckWXFetcher(BaseNotamFetcher):
     def __init__(self, api_key: str) -> None:
         self.api_key = api_key
 
-    async def fetch(self, icao_codes: list[str]) -> list[str]:
+    async def fetch(self, icao_codes: list[str], progress_cb=None) -> list[str]:
         if not icao_codes or not self.api_key:
             return []
 
         raw_notams: list[str] = []
+        total = len(icao_codes)
         async with httpx.AsyncClient(
             headers={"X-API-Key": self.api_key}, timeout=15
         ) as client:
-            for icao in icao_codes:
+            for i, icao in enumerate(icao_codes):
                 try:
                     resp = await client.get(f"{self.BASE_URL}/{icao}")
                     resp.raise_for_status()
@@ -132,6 +141,9 @@ class CheckWXFetcher(BaseNotamFetcher):
                         logger.warning(f"[checkwx] HTTP error for {icao}: {exc}")
                 except Exception as exc:
                     logger.error(f"[checkwx] Unexpected error for {icao}: {exc}")
+                finally:
+                    if progress_cb is not None:
+                        progress_cb(i + 1, total)
 
         return raw_notams
 
@@ -146,9 +158,9 @@ class NotamFetcherAggregator:
     def __init__(self, fetchers: list[BaseNotamFetcher]) -> None:
         self.fetchers = fetchers
 
-    async def fetch_all(self, icao_codes: list[str]) -> list[str]:
+    async def fetch_all(self, icao_codes: list[str], progress_cb=None) -> list[str]:
         """Fetch from all enabled sources concurrently, deduplicate by ID prefix."""
-        tasks = [f.fetch(icao_codes) for f in self.fetchers]
+        tasks = [f.fetch(icao_codes, progress_cb=progress_cb) for f in self.fetchers]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         seen: set[str] = set()

@@ -39,13 +39,17 @@ _bridge = _LogSignalBridge()
 
 
 def _qt_sink(record):
-    level = record["level"].name
-    line  = record["message"]
+    if isinstance(record, str):
+        level = "INFO"
+        line = record
+    else:
+        level = record["level"].name
+        line = record["message"]
     _bridge.new_record.emit(level, line)
 
 
 # Install the loguru → Qt bridge once at import time
-logger.add(_qt_sink, format="{message}", level="DEBUG")
+logger.add(_qt_sink, level="DEBUG")
 
 
 class LogPanel(QWidget):
@@ -64,7 +68,7 @@ class LogPanel(QWidget):
 
         self._level_combo = QComboBox()
         self._level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
-        self._level_combo.setCurrentText("INFO")
+        self._level_combo.setCurrentText("DEBUG")
         toolbar.addWidget(self._level_combo)
 
         toolbar.addStretch()

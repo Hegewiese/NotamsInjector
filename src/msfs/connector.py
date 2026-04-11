@@ -104,7 +104,7 @@ class SimConnectWrapper(QObject):
                     self._aq = AircraftRequests(self._sm, _time=2000)
                     self._is_connected = True
                     self.connected.emit()
-                    self.status_message.emit("Connected to MSFS")
+                    self.status_message.emit("SimConnect connected")
                     logger.info("SimConnect connected.")
 
                 lat = self._aq.get("PLANE_LATITUDE")
@@ -118,7 +118,7 @@ class SimConnectWrapper(QObject):
                 if self._is_connected:
                     logger.warning(f"SimConnect lost: {exc}")
                     self.disconnected.emit()
-                    self.status_message.emit(f"Disconnected: {exc}")
+                    self.status_message.emit(f"SimConnect disconnected: {exc}")
                     self._is_connected = False
                     self._sm = None
                     self._aq = None
@@ -135,7 +135,7 @@ class SimConnectWrapper(QObject):
         MOCK_LAT, MOCK_LON, MOCK_ALT = 51.477500, -0.461389, 83.0
         self._is_connected = True
         self.connected.emit()
-        self.status_message.emit("Mock mode — EGLL position")
+        self.status_message.emit("SimConnect unavailable — running mock mode")
         logger.info(f"Mock SimConnect: fixed at {MOCK_LAT}, {MOCK_LON}")
 
         while not self._stop_event.is_set():

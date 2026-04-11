@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 from pydantic_settings import PydanticBaseSettingsSource
 
@@ -19,8 +18,17 @@ class Settings(BaseSettings):
     # Behaviour
     auto_apply_notams: bool = True
     notam_refresh_interval_min: int = 15
+    notam_cache_ttl_min: int = 60
     max_notam_age_h: int = 24
     obstacle_placement_radius_nm: float = 10.0   # only place objects within this range
+    notam_movement_refetch_cooldown_s: int = 120  # skip refetch if same airport set was fetched recently
+    highlight_obstacle_objects: bool = True
+    highlight_beacon_base_ft: float = 1500.0   # MSL alt of lowest beacon in column
+    highlight_beacon_step_ft: float = 500.0    # vertical spacing between beacons
+    highlight_beacon_count: int    = 6         # number of stacked beacons
+    notam_alert_enabled: bool = True           # show in-sim NOTAM popups via SimConnect_Text
+    notam_alert_radius_nm: float = 20.0        # show popup when within this range of a NOTAM
+    alert_window_opacity: float = 0.7          # 0.7 = 30% transparent for NOTAM alert overlay
 
     # Logging
     log_level: str = "INFO"

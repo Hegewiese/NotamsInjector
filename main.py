@@ -17,18 +17,21 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from loguru import logger
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from src.config import settings
 from src.scheduler import Scheduler
 from src.ui.tray import TrayIcon
+from src.ui.widgets.log_panel import _qt_sink
 
 
 def _configure_logging() -> None:
-    logger.remove()  # remove default stderr handler
+    # Don't remove logger.remove() because it would remove the Qt sink added by log_panel
+    # Instead, just add the terminal and file handlers alongside the Qt sink
     logger.add(
         sys.stderr,
-        level=settings.log_level,
+        level="DEBUG",
         format="<green>{time:HH:mm:ss}</green> | <level>{level:8}</level> | {message}",
     )
     logger.add(
@@ -51,9 +54,6 @@ def main() -> None:
     app.setApplicationVersion("0.1.0")
     app.setOrganizationName("notam-injector")
 
-    if not QApplication.isEffectEnabled(any):
-        pass  # no-op guard
-
     scheduler = Scheduler()
     tray      = TrayIcon(scheduler)
 
@@ -62,6 +62,7 @@ def main() -> None:
         sys.exit(1)
 
     tray.show()
+    QTimer.singleShot(350, tray.show_startup_notice)
     scheduler.start()
 
     logger.info("NOTAM Injector running in system tray.")
