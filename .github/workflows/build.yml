@@ -1,0 +1,47 @@
+name: Build Windows Installer
+
+on:
+  push:
+    tags:
+      - 'v*'          # trigger on version tags: v0.1.0, v1.0.0, …
+  workflow_dispatch:  # allow manual runs from the Actions tab
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Download airports.csv
+        run: python scripts/download_airports.py
+
+      - name: Build with PyInstaller
+        run: pyinstaller build.spec
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NotamInjector-windows
+          path: dist/NotamInjector.exe
+          retention-days: 14
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/NotamInjector.exe
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

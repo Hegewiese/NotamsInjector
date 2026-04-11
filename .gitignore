@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+*.log
+
+# PyInstaller output
+dist/
+build/
+*.spec.bak
+
+# Database / cache
+*.db
+
+# airports data (downloaded separately)
+data/airports.csv
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Virtual environments
+.venv/
+venv/
+env/

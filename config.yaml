@@ -1,0 +1,22 @@
+# NOTAM Injector configuration
+# Edit this file to customise behaviour.
+
+# SimConnect / MSFS
+simconnect_enabled: true
+position_poll_interval_s: 30       # how often to read aircraft position
+notam_radius_nm: 50.0              # fetch NOTAMs for airports within this radius
+min_move_nm: 5.0                   # only re-fetch if aircraft moved this far
+
+# NOTAM sources
+notams_online_enabled: true        # notams.online (free, no key, global)
+checkwx_api_key: ""                # optional – CheckWX key as secondary source
+
+# Behaviour
+auto_apply_notams: true            # apply MSFS actions automatically when NOTAMs load
+notam_refresh_interval_min: 15     # re-fetch NOTAMs every N minutes (independent of movement)
+max_notam_age_h: 24                # discard cached NOTAMs older than N hours
+obstacle_placement_radius_nm: 10.0 # only place obstacle objects within this range of aircraft
+
+# Logging
+log_level: "INFO"                  # DEBUG | INFO | WARNING | ERROR
+log_file: "notam_injector.log"
