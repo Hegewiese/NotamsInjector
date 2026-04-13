@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     alert_window_opacity: float = 0.7          # 0.7 = 30% transparent for NOTAM alert overlay
     msfs_status_dialog_enabled: bool = True    # show startup MSFS status dialog until valid position
 
+    # WASM integration
+    wasm_state_file: str = "navaid_overrides.json"   # WASM module reads this for override state
+
     # Logging
     log_level: str = "INFO"
     log_file: str = "notam_injector.log"

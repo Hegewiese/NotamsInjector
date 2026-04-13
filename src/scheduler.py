@@ -32,7 +32,9 @@ from src.airports.lookup import AirportLookup, RunwayLookup, _haversine_nm
 from src.config import settings
 from src.db.cache import NotamCache
 from src.msfs.connector import SimConnectWrapper
+from src.msfs.atis import AtisController
 from src.msfs.navaids import NavaidController
+from src.msfs import wasm_state
 from src.msfs.notifier import NotamNotifier
 from src.msfs.objects import ObjectPlacer
 from src.notam.classifier import classify_all
@@ -53,12 +55,14 @@ class Scheduler(QObject):
     sim_status       = Signal(str)
     alert_overlay_batch = Signal(list, bool)  # list[(title,text,dist,icao,name,type,is_new)], pop_up
 
-    def __init__(self) -> None:
+
+    def __init__(self, mock_position: bool = False) -> None:
         super().__init__()
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
         self._refresh_task: Optional[asyncio.Task] = None
+        self._ready = asyncio.Event()
 
         self.airport_lookup = AirportLookup()
         self.runway_lookup  = RunwayLookup()
@@ -71,15 +75,19 @@ class Scheduler(QObject):
         self.notifier      = NotamNotifier()
         self.object_placer.set_notifier(self.notifier)
         self.navaid_ctrl   = NavaidController()
+        self.atis_ctrl     = AtisController()
 
-        self.connector = SimConnectWrapper(
-            poll_interval_s=settings.position_poll_interval_s,
-            min_move_nm=settings.min_move_nm,
-            enabled=settings.simconnect_enabled,
-        )
-        self.connector.position_changed.connect(self._on_position_changed)
-        self.connector.position_polled.connect(self._on_position_polled)
-        self.connector.status_message.connect(self.sim_status)
+        self.mock_position = mock_position
+
+        if not self.mock_position:
+            self.connector = SimConnectWrapper(
+                poll_interval_s=settings.position_poll_interval_s,
+                min_move_nm=settings.min_move_nm,
+                enabled=settings.simconnect_enabled,
+            )
+            self.connector.position_changed.connect(self._on_position_changed)
+            self.connector.position_polled.connect(self._on_position_polled)
+            self.connector.status_message.connect(self.sim_status)
 
         self._current_notams:  list[Notam]      = []
         self._current_actions: list[MsfsAction] = []
@@ -101,13 +109,24 @@ class Scheduler(QObject):
         )
         self._loop_thread.start()
         asyncio.run_coroutine_threadsafe(self._init_async(), self._loop)
-        self.connector.start()
+        if not self.mock_position:
+            self.connector.start()
+        else:
+            # EHVK (Volkel Air Base): 51.6561° N, 5.7074° E
+            lat, lon, alt = 51.6561, 5.7074, 108.0
+            self._last_lat = lat
+            self._last_lon = lon
+            self.position_updated.emit(lat, lon, alt)
+            asyncio.run_coroutine_threadsafe(
+                self._fetch_and_apply(lat, lon), self._loop
+            )
         self.poll_progress.emit(0)
         logger.info("Scheduler started.")
 
     def stop(self) -> None:
-        self.connector.stop()
-        sm = getattr(self.connector, "_sm", None)
+        if not self.mock_position:
+            self.connector.stop()
+        sm = getattr(getattr(self, "connector", None), "_sm", None)
         self.object_placer.remove_all(sm)
         if self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)
@@ -156,6 +175,7 @@ class Scheduler(QObject):
 
     async def _init_async(self) -> None:
         await self.cache.init()
+        self._ready.set()
         # Start the periodic NOTAM refresh timer
         self._refresh_task = asyncio.create_task(self._periodic_refresh())
 
@@ -193,9 +213,11 @@ class Scheduler(QObject):
 
     async def _fetch_and_apply_inner(self, lat: float, lon: float, force_fetch: bool = False) -> None:
         """Inner implementation for one fetch/apply cycle."""
+        await self._ready.wait()
         if not self.airport_lookup.loaded:
             logger.warning("Airport database not loaded — skipping NOTAM fetch.")
             return
+
 
         icao_codes = self.airport_lookup.icao_codes_within(lat, lon, settings.notam_radius_nm)
         if not icao_codes:
@@ -264,9 +286,27 @@ class Scheduler(QObject):
         # Emit again so UI reflects applied/error flags updated during _apply_actions.
         self.actions_updated.emit(actions)
 
+        # Flush WASM state file with combined navaid + ATIS override snapshot.
+        sm = getattr(getattr(self, "connector", None), "_sm", None)
+        try:
+            wasm_state.flush(
+                self.navaid_ctrl.wasm_payload(),
+                self.atis_ctrl.wasm_payload(),
+            )
+        except Exception as exc:
+            logger.warning(f"[scheduler] WASM state flush failed: {exc}")
+
+        # COM radio monitoring — alert if pilot has tuned a U/S ATIS frequency.
+        try:
+            icao_codes = self.airport_lookup.icao_codes_within(lat, lon, settings.notam_radius_nm)
+            for alert_text, icao, notam_id in self.atis_ctrl.check_com_tuning(sm, icao_codes):
+                logger.warning(f"[atis] COM tuning alert: {alert_text}")
+                self.notifier.queue_notam(f"COM-ATIS-{notam_id}", icao, alert_text)
+        except Exception as exc:
+            logger.debug(f"[scheduler] COM tuning check failed: {exc}")
+
         # Notify AFTER apply so the injection status badge is accurate.
         if settings.notam_alert_enabled:
-            sm = getattr(self.connector, "_sm", None)
             try:
                 self._notify_approaching_notams(active_notams, lat, lon, sm)
             except Exception as exc:
@@ -278,7 +318,7 @@ class Scheduler(QObject):
         aircraft_lat: float,
         aircraft_lon: float,
     ) -> None:
-        sm = getattr(self.connector, "_sm", None)
+        sm = getattr(getattr(self, "connector", None), "_sm", None)
 
         # Flush queued NOTAM popups again once SimConnect is definitely available
         # in the apply phase (startup timing can queue alerts before sm is ready).
@@ -386,6 +426,7 @@ class Scheduler(QObject):
                             notam_id=action.notam_id,
                             icao=action.icao,
                             navaid_type=navaid_type,
+                            component=action.params.get("component", "full"),
                         )
                         action.applied = ok
 
@@ -424,6 +465,46 @@ class Scheduler(QObject):
                                     f"barrier placement failed. {p.get('description','')[:60]}"
                                 )
                                 action.applied = False
+
+                    case "atis_unserviceable":
+                        self.atis_ctrl.disable(
+                            notam_id=action.notam_id,
+                            icao=action.icao,
+                            frequency_mhz=action.params.get("frequency_mhz"),
+                        )
+                        action.applied = True   # state tracked; WASM needed for dead-air
+
+                    case "close_taxiway":
+                        twy = action.params.get("taxiway_designator", "?")
+                        logger.warning(
+                            f"[scheduler] TAXIWAY CLOSED: {action.icao} TWY {twy} — "
+                            f"{action.params.get('description','')[:80]}"
+                        )
+                        action.applied = False   # TODO: barrier placement (needs taxiway coords)
+
+                    case "close_stand":
+                        stand = action.params.get("stand_designator", "?")
+                        logger.warning(
+                            f"[scheduler] STAND CLOSED: {action.icao} Stand {stand} — "
+                            f"{action.params.get('description','')[:80]}"
+                        )
+                        action.applied = False   # TODO: barrier placement (needs stand coords)
+
+                    case "runway_limited":
+                        rwy = action.params.get("runway_designator", "?")
+                        logger.warning(
+                            f"[scheduler] RUNWAY LIMITED: {action.icao} RWY {rwy} — "
+                            f"{action.params.get('description','')[:80]}"
+                        )
+                        action.applied = False   # informational; no sim enforcement yet
+
+                    case "fuel_unavailable":
+                        fuel = action.params.get("fuel_type") or "unspecified"
+                        logger.warning(
+                            f"[scheduler] FUEL UNAVAILABLE: {action.icao} {fuel} — "
+                            f"{action.params.get('description','')[:80]}"
+                        )
+                        action.applied = False   # informational; no sim equivalent
 
                     case "set_tfr":
                         logger.warning(

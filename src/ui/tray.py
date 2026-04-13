@@ -349,6 +349,8 @@ class TrayIcon(QSystemTrayIcon):
         return True
 
     def _detect_simulator_process(self) -> bool:
+        if self.scheduler.mock_position:
+            return True
         if sys.platform != "win32":
             return self.scheduler.connector.is_connected
 

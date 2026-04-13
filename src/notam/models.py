@@ -22,6 +22,7 @@ class NotamSubject(str, Enum):
     PROCEDURE = "PI"   # Instrument approach procedure
     COMMS     = "ST"   # ATC communications / frequencies
     UAV       = "WU"   # UAV / drone operations
+    FUEL      = "FU"   # Fuel availability
     UNKNOWN   = "??"
 
 
@@ -87,13 +88,14 @@ SUBJECT_MAP: dict[str, NotamSubject] = {
     "CP": NotamSubject.AERODROME, # PAR / precision approach radar procedure
     "FF": NotamSubject.AERODROME, # Fire fighting and rescue services
     "FM": NotamSubject.AERODROME, # Met / wind measurement facility
-    "FU": NotamSubject.AERODROME, # Fuel and oil availability
+    "FU": NotamSubject.FUEL,       # Fuel and oil availability
     "NA": NotamSubject.AERODROME, # VDF / nav radio transmitter
     "AF": NotamSubject.PROCEDURE, # SID / STAR / instrument procedure suspension
     "PD": NotamSubject.PROCEDURE, # Departure procedure / GNSS approach
     "PO": NotamSubject.PROCEDURE, # OCA / approach minima change
     "PM": NotamSubject.PROCEDURE, # Instrument approach minima change
-    "CA": NotamSubject.COMMS,     # ATIS
+    "CA": NotamSubject.COMMS,     # ATIS / ATC communications
+    "SA": NotamSubject.COMMS,     # ATC/comms services (German AIS and others)
     "ST": NotamSubject.COMMS,
     "WU": NotamSubject.UAV,
 }
@@ -138,6 +140,7 @@ class Notam:
     description: str = ""            # E-field free text
     raw: str = ""                    # original text
     source: str = ""                 # fetcher that produced this
+    raw_subject_code: str = ""       # original 2-char Q-line subject code (e.g. "IG", "IS", "ID")
 
     @property
     def is_active(self) -> bool:

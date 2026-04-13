@@ -224,10 +224,11 @@ def parse_notam(raw_text: str, source: str = "") -> Optional[Notam]:
     valid_to   = _parse_dt(c_match.group(1)) if c_match else None
 
     # ── Q) line ───────────────────────────────────────────────────────────────
-    subject   = NotamSubject.UNKNOWN
-    condition = NotamCondition.UNKNOWN
-    lower_ft  = 0
-    upper_ft  = 99999
+    subject          = NotamSubject.UNKNOWN
+    condition        = NotamCondition.UNKNOWN
+    lower_ft         = 0
+    upper_ft         = 99999
+    raw_subject_code = ""
     # Coarse position from Q-line (degrees+minutes only, airport-level precision)
     q_lat = q_lon = q_radius = None
 
@@ -244,6 +245,8 @@ def parse_notam(raw_text: str, source: str = "") -> Optional[Notam]:
             condition_code = qcode[2:4]
             subject        = SUBJECT_MAP.get(subject_code,   NotamSubject.UNKNOWN)
             condition      = CONDITION_MAP.get(condition_code, NotamCondition.UNKNOWN)
+            # Preserve for downstream ILS component classification (IG/IS/ID/IO/IM/II)
+            raw_subject_code = subject_code
             q_lat, q_lon, q_radius = _parse_qline_coord(ql.group(8))
         else:
             logger.debug(f"[{notam_id}] Q-line pattern mismatch: {q_line!r}")
@@ -276,6 +279,7 @@ def parse_notam(raw_text: str, source: str = "") -> Optional[Notam]:
         description=description,
         raw=text,
         source=source,
+        raw_subject_code=raw_subject_code,
     )
 
 

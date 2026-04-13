@@ -97,10 +97,84 @@ class ActionsPanel(QWidget):
             placement_note = action.params.get("placement_note")
             if placement_note:
                 note_parts.append(str(placement_note))
-            if action.action_type == "place_obstacle":
-                description = action.params.get("description")
-                if description:
-                    note_parts.append(description)
+
+            match action.action_type:
+                case "disable_ils":
+                    component = action.params.get("component", "full")
+                    if component != "full":
+                        note_parts.append(f"Component: {component.upper()}")
+                    desc = action.params.get("description", "")
+                    if desc:
+                        note_parts.append(desc[:120])
+                case "enable_ils":
+                    desc = action.params.get("description", "")
+                    if desc:
+                        note_parts.append(desc[:120])
+                case "disable_navaid":
+                    navaid_type = action.params.get("navaid_type", "")
+                    if navaid_type:
+                        note_parts.append(navaid_type)
+                    desc = action.params.get("description", "")
+                    if desc:
+                        note_parts.append(desc[:120])
+                case "close_runway":
+                    rwy = action.params.get("runway_designator", "")
+                    if rwy:
+                        note_parts.append(f"RWY {rwy}")
+                    desc = action.params.get("description", "")
+                    if desc:
+                        note_parts.append(desc[:120])
+                case "atis_unserviceable":
+                    freq = action.params.get("frequency_mhz")
+                    if freq is not None:
+                        note_parts.append(f"{freq:.3f} MHz")
+                    desc = action.params.get("description", "")
+                    if desc:
+                        note_parts.append(desc[:120])
+                case "close_taxiway":
+                    twy = action.params.get("taxiway_designator", "")
+                    if twy:
+                        note_parts.append(f"TWY {twy}")
+                    desc = action.params.get("description", "")
+                    if desc:
+                        note_parts.append(desc[:120])
+                case "close_stand":
+                    stand = action.params.get("stand_designator", "")
+                    if stand:
+                        note_parts.append(f"Stand {stand}")
+                    desc = action.params.get("description", "")
+                    if desc:
+                        note_parts.append(desc[:120])
+                case "runway_limited":
+                    rwy = action.params.get("runway_designator", "")
+                    if rwy:
+                        note_parts.append(f"RWY {rwy}")
+                    desc = action.params.get("description", "")
+                    if desc:
+                        note_parts.append(desc[:120])
+                case "fuel_unavailable":
+                    fuel = action.params.get("fuel_type", "")
+                    if fuel:
+                        note_parts.append(fuel)
+                    desc = action.params.get("description", "")
+                    if desc:
+                        note_parts.append(desc[:120])
+                case "set_tfr":
+                    lower = action.params.get("lower_ft", 0)
+                    upper = action.params.get("upper_ft", 0)
+                    radius = action.params.get("radius_nm")
+                    tfr_info = f"{lower}–{upper} ft"
+                    if radius:
+                        tfr_info += f", r={radius} nm"
+                    note_parts.append(tfr_info)
+                    desc = action.params.get("description", "")
+                    if desc:
+                        note_parts.append(desc[:100])
+                case "place_obstacle":
+                    desc = action.params.get("description", "")
+                    if desc:
+                        note_parts.append(desc[:120])
+
             note = " — ".join(note_parts)
             lit_val = action.params.get("lit")
             lit_str = "Yes" if lit_val is True else ("No" if lit_val is False else "-")

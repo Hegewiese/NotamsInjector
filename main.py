@@ -54,7 +54,7 @@ def main() -> None:
     app.setApplicationVersion("0.1.0")
     app.setOrganizationName("notam-injector")
 
-    scheduler = Scheduler()
+    scheduler = Scheduler(mock_position=True)
     tray      = TrayIcon(scheduler)
 
     if not tray.isSystemTrayAvailable():

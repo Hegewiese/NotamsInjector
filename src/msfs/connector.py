@@ -138,7 +138,8 @@ class SimConnectWrapper(QObject):
         Mock loop — emits a fixed position (EGLL / London Heathrow) so the
         rest of the application can be developed and tested without MSFS.
         """
-        MOCK_LAT, MOCK_LON, MOCK_ALT = 51.477500, -0.461389, 83.0
+        # EDDF (Frankfurt): 50.0379, 8.5622, approx 100ft alt
+        MOCK_LAT, MOCK_LON, MOCK_ALT = 50.0379, 8.5622, 100.0
         self._is_connected = True
         self.connected.emit()
         self.status_message.emit("SimConnect unavailable — running mock mode")
