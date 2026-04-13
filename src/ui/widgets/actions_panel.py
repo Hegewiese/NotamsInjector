@@ -94,6 +94,9 @@ class ActionsPanel(QWidget):
             note_parts = []
             if action.error:
                 note_parts.append(action.error)
+            placement_note = action.params.get("placement_note")
+            if placement_note:
+                note_parts.append(str(placement_note))
             if action.action_type == "place_obstacle":
                 description = action.params.get("description")
                 if description:

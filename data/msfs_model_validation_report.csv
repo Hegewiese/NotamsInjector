@@ -1,0 +1,5 @@
+title,status,detail
+﻿Pipelay_Crane_SK3000,failed,Object not retained after create
+Wind_Turbine_2,ok,object_id=177127434
+Wind_Turbine_1,ok,object_id=177127435
+Wind_Turbine_Senvion,ok,object_id=177127436

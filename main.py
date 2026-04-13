@@ -62,6 +62,7 @@ def main() -> None:
         sys.exit(1)
 
     tray.show()
+    tray.show_msfs_startup_dialog()
     QTimer.singleShot(350, tray.show_startup_notice)
     scheduler.start()
 

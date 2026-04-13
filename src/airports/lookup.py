@@ -18,7 +18,9 @@ from pathlib import Path
 from loguru import logger
 
 DATA_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "airports.csv"
+RUNWAYS_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "runways.csv"
 _AIRPORTS_URL = "https://davidmegginson.github.io/ourairports-data/airports.csv"
+_RUNWAYS_URL = "https://davidmegginson.github.io/ourairports-data/runways.csv"
 
 # OurAirports types we care about (filter out heliports, seaplane bases, etc.)
 INCLUDED_TYPES = {"medium_airport", "large_airport", "small_airport"}
@@ -137,3 +139,118 @@ class AirportLookup:
     @property
     def loaded(self) -> bool:
         return len(self._airports) > 0
+
+
+# ── Runway lookup ─────────────────────────────────────────────────────────────
+
+@dataclass(slots=True)
+class Runway:
+    airport_icao: str
+    le_ident: str           # e.g. "09L"
+    he_ident: str           # e.g. "27R"
+    le_lat: float
+    le_lon: float
+    he_lat: float
+    he_lon: float
+    le_heading: float
+    he_heading: float
+    length_ft: int
+    width_ft: int
+
+
+class RunwayLookup:
+    """In-memory runway database loaded from OurAirports runways.csv."""
+
+    def __init__(self, csv_path: Path = RUNWAYS_PATH) -> None:
+        self._runways: dict[str, list[Runway]] = {}   # ICAO → list of runways
+        self._load(csv_path)
+
+    def _download(self, csv_path: Path) -> None:
+        logger.info("runways.csv not found — downloading from OurAirports…")
+        try:
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
+            urllib.request.urlretrieve(_RUNWAYS_URL, csv_path)
+            lines = csv_path.read_text(encoding="utf-8").splitlines()
+            logger.info(f"Downloaded {len(lines) - 1:,} runways to {csv_path}")
+        except Exception as exc:
+            logger.error(f"Failed to download runways.csv: {exc}")
+
+    def _load(self, csv_path: Path) -> None:
+        if not csv_path.exists():
+            self._download(csv_path)
+        if not csv_path.exists():
+            logger.warning("Runway database unavailable.")
+            return
+
+        count = 0
+        with csv_path.open(newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                icao = (row.get("airport_ident") or "").strip().upper()
+                if not icao or len(icao) != 4:
+                    continue
+                try:
+                    le_lat = float(row["le_latitude_deg"])
+                    le_lon = float(row["le_longitude_deg"])
+                    he_lat = float(row["he_latitude_deg"])
+                    he_lon = float(row["he_longitude_deg"])
+                except (ValueError, KeyError, TypeError):
+                    continue
+
+                def _float(val: str, default: float = 0.0) -> float:
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        return default
+
+                def _int(val: str, default: int = 0) -> int:
+                    try:
+                        return int(float(val))
+                    except (ValueError, TypeError):
+                        return default
+
+                rwy = Runway(
+                    airport_icao=icao,
+                    le_ident=(row.get("le_ident") or "").strip().upper(),
+                    he_ident=(row.get("he_ident") or "").strip().upper(),
+                    le_lat=le_lat,
+                    le_lon=le_lon,
+                    he_lat=he_lat,
+                    he_lon=he_lon,
+                    le_heading=_float(row.get("le_heading_degT", "")),
+                    he_heading=_float(row.get("he_heading_degT", "")),
+                    length_ft=_int(row.get("length_ft", "")),
+                    width_ft=_int(row.get("width_ft", "")),
+                )
+                self._runways.setdefault(icao, []).append(rwy)
+                count += 1
+
+        logger.info(f"Loaded {count:,} runways from {csv_path.name}")
+
+    def find_runway(self, icao: str, designator: str) -> Runway | None:
+        """
+        Find a runway by ICAO and designator (e.g. "09L", "27R", "09/27").
+
+        If designator contains "/" (e.g. "09/27"), both ends are checked.
+        Returns the first matching Runway or None.
+        """
+        icao = icao.upper().strip()
+        designator = designator.upper().strip()
+        runways = self._runways.get(icao, [])
+        if not runways:
+            return None
+
+        parts = [d.strip() for d in designator.split("/")]
+        for rwy in runways:
+            if rwy.le_ident in parts or rwy.he_ident in parts:
+                return rwy
+
+        return None
+
+    def runways_for(self, icao: str) -> list[Runway]:
+        """Return all runways for an airport ICAO code."""
+        return self._runways.get(icao.upper().strip(), [])
+
+    @property
+    def loaded(self) -> bool:
+        return len(self._runways) > 0

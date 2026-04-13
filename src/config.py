@@ -7,7 +7,7 @@ from pydantic_settings import PydanticBaseSettingsSource
 class Settings(BaseSettings):
     # SimConnect / MSFS
     simconnect_enabled: bool = True
-    position_poll_interval_s: int = 30
+    position_poll_interval_s: int = 5
     notam_radius_nm: float = 50.0
     min_move_nm: float = 5.0
 
@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     notam_alert_enabled: bool = True           # show in-sim NOTAM popups via SimConnect_Text
     notam_alert_radius_nm: float = 20.0        # show popup when within this range of a NOTAM
     alert_window_opacity: float = 0.7          # 0.7 = 30% transparent for NOTAM alert overlay
+    msfs_status_dialog_enabled: bool = True    # show startup MSFS status dialog until valid position
 
     # Logging
     log_level: str = "INFO"

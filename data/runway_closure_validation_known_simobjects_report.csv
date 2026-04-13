@@ -1,0 +1,8 @@
+title,status,detail
+Pipelay_Crane_SK3000,dispatch_failed,Create request rejected
+Wind_Turbine_2,dispatch_failed,Create request rejected
+Wind_Turbine_1,dispatch_failed,Create request rejected
+Wind_Turbine_Senvion,dispatch_failed,Create request rejected
+LR35_FuelTruck,dispatch_failed,Create request rejected
+glx_aa_antenna_a10,dispatch_failed,Create request rejected
+glx_aa_antenna_a11,dispatch_failed,Create request rejected

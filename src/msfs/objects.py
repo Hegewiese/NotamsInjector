@@ -43,6 +43,8 @@ from typing import Optional
 
 from loguru import logger
 
+from src.msfs.obstacle_catalog import ObstacleModelEntry, load_obstacle_catalog, resolve_obstacle_entry
+
 # ── Platform guard ──────────────────────────────────────────────────────────────
 _ON_WINDOWS = sys.platform == "win32"
 
@@ -82,16 +84,7 @@ class _RecvEvent(ctypes.Structure):
     ]
 
 
-_CONFIRMED_CRANE_TITLE = "Wind_Turbine_2"
-
-# ── Candidate crane model titles ────────────────────────────────────────────────
-_CRANE_TITLES = [
-    _CONFIRMED_CRANE_TITLE,
-]
-
-_BEACON_TITLES = [
-    _CONFIRMED_CRANE_TITLE,
-]
+_FALLBACK_TITLE = "Wind_Turbine_2"
 
 
 @dataclass
@@ -102,8 +95,9 @@ class PlacedObject:
     lon:       float
     alt_ft:    float
     lit:       bool
-    object_id: int  = 0      # set when SimConnect confirms placement
-    confirmed: bool = False  # True once object_id is known
+    heading:   float = 0.0   # degrees true
+    object_id: int   = 0     # set when SimConnect confirms placement
+    confirmed: bool  = False  # True once object_id is known
 
 
 @dataclass
@@ -114,6 +108,7 @@ class _PendingPlacement:
     alt_ft: float
     lit: bool
     on_ground: bool
+    heading: float
     remaining_titles: list[str]
 
 
@@ -137,6 +132,7 @@ class ObjectPlacer:
         self._working_title: Optional[str] = None
         self._light_registered = False
         self._notifier: Optional[object] = None   # NotamNotifier, set externally
+        self._catalog: dict[str, ObstacleModelEntry] = load_obstacle_catalog()
 
     def set_notifier(self, notifier: object) -> None:
         """Attach a NotamNotifier so text-result events are forwarded to it."""
@@ -153,6 +149,8 @@ class ObjectPlacer:
         alt_ft: float = 0.0,
         lit: bool = True,
         on_ground: bool = True,
+        heading: float = 0.0,
+        obstacle_kind: str = "generic_obstacle",
         titles_to_try: Optional[list[str]] = None,
     ) -> bool:
         """
@@ -161,22 +159,24 @@ class ObjectPlacer:
 
         ``on_ground=True``  → MSFS snaps the object to terrain (alt_ft ignored).
         ``on_ground=False`` → MSFS uses alt_ft as MSL altitude (object floats).
+        ``heading``         → degrees true; controls yaw of the placed object.
         """
         with self._lock:
             already = notam_id in self._placed
         if already:
             return True   # already placed, no-op
 
-        title = self._working_title or _CRANE_TITLES[0]
+        resolved_titles = titles_to_try or self._titles_for_kind(obstacle_kind)
+        title = self._working_title or resolved_titles[0]
         if titles_to_try is None:
             titles_to_try = (
-                [self._working_title] + [t for t in _CRANE_TITLES if t != self._working_title]
+                [self._working_title] + [t for t in resolved_titles if t != self._working_title]
                 if self._working_title
-                else _CRANE_TITLES
+                else resolved_titles
             )
 
         if not _ON_WINDOWS or sm is None:
-            return self._mock_place(notam_id, title, lat, lon, alt_ft, lit, on_ground)
+            return self._mock_place(notam_id, title, lat, lon, alt_ft, lit, on_ground, heading)
 
         return self._sc_place(
             sm,
@@ -187,6 +187,7 @@ class ObjectPlacer:
             alt_ft,
             lit,
             on_ground=on_ground,
+            heading=heading,
             titles_to_try=titles_to_try,
         )
 
@@ -223,7 +224,7 @@ class ObjectPlacer:
                 alt_ft=alt,
                 lit=lit,
                 on_ground=False,
-                titles_to_try=_BEACON_TITLES,
+                titles_to_try=self._titles_for_kind("beacon"),
             )
             if ok:
                 placed += 1
@@ -292,6 +293,9 @@ class ObjectPlacer:
     def active(self) -> list[PlacedObject]:
         with self._lock:
             return list(self._placed.values())
+
+    def entry_for_kind(self, obstacle_kind: str) -> ObstacleModelEntry:
+        return resolve_obstacle_entry(obstacle_kind, self._catalog)
 
     # ── Raw DLL helper ───────────────────────────────────────────────────────────
 
@@ -422,6 +426,7 @@ class ObjectPlacer:
                     meta.alt_ft,
                     meta.lit,
                     meta.on_ground,
+                    meta.heading,
                     next_remaining,
                 )
                 return
@@ -511,6 +516,7 @@ class ObjectPlacer:
                 meta.alt_ft,
                 meta.lit,
                 meta.on_ground,
+                meta.heading,
                 next_remaining,
             )
             return
@@ -533,6 +539,7 @@ class ObjectPlacer:
         alt_ft: float,
         lit: bool,
         on_ground: bool,
+        heading: float,
         remaining_titles: list[str],
     ) -> bool:
         req_id = self._next_req()
@@ -542,7 +549,7 @@ class ObjectPlacer:
             Altitude=alt_ft,
             Pitch=0.0,
             Bank=0.0,
-            Heading=0.0,
+            Heading=heading,
             OnGround=1 if on_ground else 0,
             Airspeed=0,
         )
@@ -555,6 +562,7 @@ class ObjectPlacer:
                 alt_ft=alt_ft,
                 lit=lit,
                 on_ground=on_ground,
+                heading=heading,
                 remaining_titles=remaining_titles,
             )
         hr = None
@@ -598,6 +606,7 @@ class ObjectPlacer:
                 alt_ft,
                 lit,
                 on_ground,
+                heading,
                 remaining_titles[1:],
             )
 
@@ -620,11 +629,12 @@ class ObjectPlacer:
         alt_ft: float,
         lit: bool,
         on_ground: bool = True,
+        heading: float = 0.0,
         titles_to_try: Optional[list[str]] = None,
     ) -> bool:
         self._ensure_light_definition(sm)
 
-        titles_to_try = titles_to_try or ([title] if self._working_title else _CRANE_TITLES)
+        titles_to_try = titles_to_try or [title]
 
         for index, t in enumerate(titles_to_try):
             remaining = titles_to_try[index + 1 :]
@@ -635,7 +645,7 @@ class ObjectPlacer:
                 Altitude=alt_ft,
                 Pitch=0.0,
                 Bank=0.0,
-                Heading=0.0,
+                Heading=heading,
                 OnGround=1 if on_ground else 0,
                 Airspeed=0,
             )
@@ -646,6 +656,7 @@ class ObjectPlacer:
                 lon=lon,
                 alt_ft=alt_ft,
                 lit=lit,
+                heading=heading,
             )
             with self._lock:
                 self._pending[req_id] = notam_id
@@ -656,6 +667,7 @@ class ObjectPlacer:
                     alt_ft=alt_ft,
                     lit=lit,
                     on_ground=on_ground,
+                    heading=heading,
                     remaining_titles=remaining,
                 )
             hr = None
@@ -690,8 +702,12 @@ class ObjectPlacer:
                         self._pending.pop(req_id, None)
                         self._pending_meta.pop(req_id, None)
 
-        logger.warning(f"[objects] No working crane model found for {notam_id}")
+        logger.warning(f"[objects] No working obstacle model found for {notam_id}")
         return False
+
+    def _titles_for_kind(self, obstacle_kind: str) -> list[str]:
+        entry = self.entry_for_kind(obstacle_kind)
+        return entry.titles if entry.titles else [_FALLBACK_TITLE]
 
     def _create_request(self, sm: object, title: str, init_pos: _InitPos, req_id: int) -> tuple[int, str]:
         """Create a SimObject request using AICreateSimulatedObject."""
@@ -761,10 +777,11 @@ class ObjectPlacer:
         alt_ft: float,
         lit: bool,
         on_ground: bool = True,
+        heading: float = 0.0,
     ) -> bool:
         obj = PlacedObject(
             notam_id=notam_id, title=title,
-            lat=lat, lon=lon, alt_ft=alt_ft, lit=lit,
+            lat=lat, lon=lon, alt_ft=alt_ft, lit=lit, heading=heading,
             object_id=hash(notam_id) & 0xFFFF,
             confirmed=True,
         )

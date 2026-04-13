@@ -1,0 +1,93 @@
+# Data-driven mapping from parsed obstacle kind -> SimObject titles to try.
+# Order matters: first title is attempted first; following titles are fallbacks.
+
+obstacle_models:
+  crane:
+    placement_type: simobject
+    titles:
+      - Construction_BigCrane01
+      - Wind_Turbine_Senvion
+      - Pipelay_Crane_SK3000
+      - Wind_Turbine_2
+      - Wind_Turbine_1
+      
+
+  mast_tower_antenna:
+    - glx_aa_antenna_a10
+    - glx_aa_antenna_a11
+    - glx_aa_antenna_a12
+    - glx_aa_antenna_a13
+    - glx_aa_antenna_a14
+    - glx_aa_antenna_a15
+    - glx_aa_antenna_a16
+    - glx_aa_antenna_a17
+    - glx_aa_antenna_a18
+    - glx_aa_antenna_a19
+    - glx_aa_antenna_a20
+    - glx_aa_antenna_a21
+    - glx_aa_antenna_a22
+    - glx_aa_antenna_a23
+    - glx_aa_antenna_a24
+    - glx_aa_antenna_a25
+    - glx_aa_antenna_a26
+    - glx_aa_antenna_a27
+    - glx_aa_antenna_a28
+    - glx_aa_antenna_a29
+    - glx_aa_antenna_a30
+    - glx_aa_antenna_a31
+    - glx_aa_antenna_a32
+    - glx_aa_antenna_a33
+    - glx_aa_antenna_a34
+    - glx_aa_antenna_a35
+
+
+  wind_turbine:
+    - Wind_Turbine_1
+    - Wind_Turbine_2
+    - Wind_Turbine_Senvion
+    - Wind_Turbine_Siemens_SWT_1
+    - Wind_Turbine_Senvion_Maintenance
+    - Wind_Turbine_Siemens_SWT_1_Generator
+    - Windmill
+
+  chimney_stack:
+    - glx_aa_Chimney_a100
+    - glx_aa_Chimney_a200
+
+
+  building:
+    - Wind_Turbine_2
+
+  generic_obstacle:
+    - Pipelay_Crane_SK3000
+
+  # Separate key used for vertical highlight markers.
+  beacon:
+    - Wind_Turbine_2
+
+  # Runway closure barriers — placed across the threshold.
+  runway_closure:
+    - Wind_Turbine_Senvion
+    - NotamsInjector_MyCube_01
+
+  # ICAO Annex 14 flat yellow X ground markers — three size variants.
+  # Requires dist/community/notamsinjector-rwy-x/ installed in MSFS.
+  # Scheduler picks the variant matching rwy.width_ft; each falls back
+  # to the next larger size if the model is not found.
+  runway_closure_x_s:   # < 30 m (< 100 ft)  — arm 10 m × 1.8 m
+    placement_type: simobject
+    titles:
+      - NotamsInjector_Runway_Closed_X_S
+      - NotamsInjector_Runway_Closed_X_M
+
+  runway_closure_x_m:   # 30–45 m (100–150 ft) — arm 18 m × 3.0 m
+    placement_type: simobject
+    titles:
+      - NotamsInjector_Runway_Closed_X_M
+      - NotamsInjector_Runway_Closed_X_L
+
+  runway_closure_x_l:   # > 45 m (> 150 ft)  — arm 27 m × 4.5 m  (e.g. EDDF)
+    placement_type: simobject
+    titles:
+      - NotamsInjector_Runway_Closed_X_L
+      - NotamsInjector_Runway_Closed_X_M

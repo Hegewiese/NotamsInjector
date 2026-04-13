@@ -6,7 +6,7 @@ Closes to tray instead of quitting the app.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QFont
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
@@ -100,10 +100,11 @@ class MainWindow(QMainWindow):
         self.scheduler.position_updated.connect(self._on_position)
         self.scheduler.position_updated.connect(self.notam_table.update_position)
         self.scheduler.position_updated.connect(self.actions_panel.update_position)
+        self.scheduler.position_sampled.connect(self.alert_overlay.update_reference_position)
         self.scheduler.sim_status.connect(self._on_sim_status)
         self.scheduler.fetch_progress.connect(self._on_fetch_progress)
-        self.scheduler.alert_overlay.connect(self._on_alert_overlay)
-        self.scheduler.alert_overlay_clear.connect(self.alert_overlay.clear_alerts)
+        self.scheduler.poll_progress.connect(self.alert_overlay.update_poll_progress)
+        self.scheduler.alert_overlay_batch.connect(self.alert_overlay.replace_alerts)
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 
@@ -142,17 +143,6 @@ class MainWindow(QMainWindow):
     def _hide_fetch_bar(self) -> None:
         self._fetch_bar.setVisible(False)
 
-    def _on_alert_overlay(
-        self,
-        title: str,
-        message: str,
-        dist_nm: float,
-        icao: str,
-        airport_name: str,
-        notam_type: str,
-        is_new: bool,
-    ) -> None:
-        self.alert_overlay.show_alert(title, message, dist_nm, icao, airport_name, notam_type, pop_up=is_new)
 
     # ── Close to tray ─────────────────────────────────────────────────────────
 

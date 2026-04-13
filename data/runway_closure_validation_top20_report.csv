@@ -1,0 +1,21 @@
+title,status,detail
+Airport_Metal_Barrier_single,failed,Object not retained after create
+Airport_PlasticBarrier_Type1_Single_Red,failed,Object not retained after create
+Airport_PlasticBarrier_Type1_Single_White,failed,Object not retained after create
+Airport_PlasticBarrier_Type2_Single_Red,failed,Object not retained after create
+Airport_PlasticBarrier_Type2_Single_White,failed,Object not retained after create
+Airport_PlasticBarrier_Type3_Single_Red,failed,Object not retained after create
+Airport_PlasticBarrier_Type3_Single_White,failed,Object not retained after create
+Airport_Wind_Barrier_Single_Red,failed,Object not retained after create
+Airport_Wind_Barrier_Single_White,failed,Object not retained after create
+Barrier_RedandWhite,failed,Object not retained after create
+Cone_Red,failed,Object not retained after create
+Cone_Red_Medium,failed,Object not retained after create
+Cone_Red_Small,failed,Object not retained after create
+Cone_Long_Red,failed,Object not retained after create
+ApproachLight_01_Red,failed,Object not retained after create
+Construction_Spotlight,failed,Object not retained after create
+Airport_Light_Fence_Type1,failed,Object not retained after create
+Airport_Light_Fence_Type2,failed,Object not retained after create
+Airport_Light_Fence_Type3,failed,Object not retained after create
+Airport_Metal_Barrier_10_pack,failed,Object not retained after create

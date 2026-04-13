@@ -22,14 +22,13 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
 from datetime import datetime, timezone
 from typing import Optional
 
 from loguru import logger
 from PySide6.QtCore import QObject, Signal
 
-from src.airports.lookup import AirportLookup, _haversine_nm
+from src.airports.lookup import AirportLookup, RunwayLookup, _haversine_nm
 from src.config import settings
 from src.db.cache import NotamCache
 from src.msfs.connector import SimConnectWrapper
@@ -48,10 +47,11 @@ class Scheduler(QObject):
     notams_updated   = Signal(list)          # list[Notam]
     actions_updated  = Signal(list)          # list[MsfsAction]
     position_updated = Signal(float, float, float)
+    position_sampled = Signal(float, float, float)  # lat, lon, heading_deg (every poll)
     fetch_progress   = Signal(int, int)       # (done, total) airports fetched
+    poll_progress    = Signal(int)            # movement progress dial (0-100)
     sim_status       = Signal(str)
-    alert_overlay    = Signal(str, str, float, str, str, str, bool)  # (..., is_new)
-    alert_overlay_clear = Signal()
+    alert_overlay_batch = Signal(list, bool)  # list[(title,text,dist,icao,name,type,is_new)], pop_up
 
     def __init__(self) -> None:
         super().__init__()
@@ -61,6 +61,7 @@ class Scheduler(QObject):
         self._refresh_task: Optional[asyncio.Task] = None
 
         self.airport_lookup = AirportLookup()
+        self.runway_lookup  = RunwayLookup()
         self.cache          = NotamCache()
         self.fetcher        = build_aggregator(
             notams_online_enabled=settings.notams_online_enabled,
@@ -77,6 +78,7 @@ class Scheduler(QObject):
             enabled=settings.simconnect_enabled,
         )
         self.connector.position_changed.connect(self._on_position_changed)
+        self.connector.position_polled.connect(self._on_position_polled)
         self.connector.status_message.connect(self.sim_status)
 
         self._current_notams:  list[Notam]      = []
@@ -87,6 +89,8 @@ class Scheduler(QObject):
         self._last_lon: float = 0.0
         self._fetch_in_progress: bool = False
         self._pending_fetch: Optional[tuple[float, float, bool]] = None
+        self._dial_cycle_origin: Optional[tuple[float, float]] = None
+        self._dial_restart_pending: bool = False
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -98,6 +102,7 @@ class Scheduler(QObject):
         self._loop_thread.start()
         asyncio.run_coroutine_threadsafe(self._init_async(), self._loop)
         self.connector.start()
+        self.poll_progress.emit(0)
         logger.info("Scheduler started.")
 
     def stop(self) -> None:
@@ -109,6 +114,30 @@ class Scheduler(QObject):
         logger.info("Scheduler stopped.")
 
     # ── Qt slot (called from SimConnect thread) ────────────────────────────────
+
+    def _on_position_polled(self, lat: float, lon: float, alt: float, heading_deg: float) -> None:
+        """Update movement dial: 0% at origin, 100% at min_move_nm, then restart cycle."""
+        self.position_sampled.emit(lat, lon, heading_deg)
+
+        if self._dial_cycle_origin is None:
+            self._dial_cycle_origin = (lat, lon)
+            self.poll_progress.emit(0)
+            return
+
+        if self._dial_restart_pending:
+            self._dial_cycle_origin = (lat, lon)
+            self._dial_restart_pending = False
+            self.poll_progress.emit(0)
+            return
+
+        min_move = max(settings.min_move_nm, 0.01)
+        moved_nm = _haversine_nm(self._dial_cycle_origin[0], self._dial_cycle_origin[1], lat, lon)
+        progress = min(100, int((moved_nm / min_move) * 100))
+        self.poll_progress.emit(progress)
+
+        if progress >= 100:
+            # Keep 100% visible until the next polled position starts a new cycle.
+            self._dial_restart_pending = True
 
     def _on_position_changed(self, lat: float, lon: float, alt: float) -> None:
         self._last_lat = lat
@@ -263,17 +292,33 @@ class Scheduler(QObject):
         # Collect the set of active obstacle notam_ids that are close enough
         wanted: set[str] = set()
         for action in actions:
-            if action.action_type != "place_obstacle":
-                continue
-            p = action.params
-            if not (p.get("lat") and p.get("lon")):
-                continue
-            dist_nm = _haversine_nm(aircraft_lat, aircraft_lon, p["lat"], p["lon"])
-            if dist_nm <= settings.obstacle_placement_radius_nm:
-                wanted.add(action.notam_id)
-                if settings.highlight_obstacle_objects:
-                    for _i in range(settings.highlight_beacon_count):
-                        wanted.add(f"{action.notam_id}-hl-{_i}")
+            if action.action_type == "place_obstacle":
+                p = action.params
+                if not (p.get("lat") and p.get("lon")):
+                    continue
+                dist_nm = _haversine_nm(aircraft_lat, aircraft_lon, p["lat"], p["lon"])
+                if dist_nm <= settings.obstacle_placement_radius_nm:
+                    wanted.add(action.notam_id)
+                    if settings.highlight_obstacle_objects:
+                        for _i in range(settings.highlight_beacon_count):
+                            wanted.add(f"{action.notam_id}-hl-{_i}")
+            elif action.action_type == "close_runway":
+                # Runway barriers: resolve coordinates from runway DB
+                rwy_desig = action.params.get("runway_designator", "")
+                rwy = self.runway_lookup.find_runway(action.icao, rwy_desig) if rwy_desig else None
+                if rwy is None and rwy_desig:
+                    runways = self.runway_lookup.runways_for(action.icao)
+                    if len(runways) == 1:
+                        rwy = runways[0]
+                if rwy is not None:
+                    mid_lat = (rwy.le_lat + rwy.he_lat) / 2
+                    mid_lon = (rwy.le_lon + rwy.he_lon) / 2
+                    dist_nm = _haversine_nm(aircraft_lat, aircraft_lon, mid_lat, mid_lon)
+                    if dist_nm <= settings.obstacle_placement_radius_nm:
+                        wanted.add(action.notam_id)
+                        for end in ("le", "he"):
+                            wanted.add(f"{action.notam_id}-rwybar-{end}")
+                            wanted.add(f"{action.notam_id}-rwyx-{end}")
 
         # Remove objects that are now out of range or whose NOTAM is gone
         currently_placed = self.object_placer.placed_notam_ids
@@ -290,13 +335,18 @@ class Scheduler(QObject):
                         if action.notam_id not in wanted:
                             continue   # too far away, already handled above
                         p = action.params
+                        obstacle_kind = str(p.get("obstacle_kind", "generic_obstacle"))
+                        entry = self.object_placer.entry_for_kind(obstacle_kind)
+
                         placed = self.object_placer.place(
                             sm,
                             notam_id=action.notam_id,
                             lat=p["lat"],
                             lon=p["lon"],
                             alt_ft=p.get("upper_ft", 0),
-                            lit=True,
+                            lit=bool(p.get("lit", True)),
+                            obstacle_kind=obstacle_kind,
+                            titles_to_try=entry.titles,
                         )
                         if settings.highlight_obstacle_objects:
                             self.object_placer.highlight_column(
@@ -307,7 +357,7 @@ class Scheduler(QObject):
                                 base_alt_ft=settings.highlight_beacon_base_ft,
                                 step_ft=settings.highlight_beacon_step_ft,
                                 count=settings.highlight_beacon_count,
-                                lit=True,
+                                lit=bool(p.get("lit", True)),
                             )
 
                         if placed:
@@ -340,13 +390,40 @@ class Scheduler(QObject):
                         action.applied = ok
 
                     case "close_runway":
-                        # SimConnect has no direct runway-close API.
-                        # Log prominently so the pilot is warned via the UI.
-                        logger.warning(
-                            f"[scheduler] RUNWAY CLOSURE: {action.icao} — "
-                            f"{action.params.get('description','')[:80]}"
-                        )
-                        action.applied = False   # flagged but not applied in sim
+                        p = action.params
+                        rwy_desig = p.get("runway_designator", "")
+                        rwy = self.runway_lookup.find_runway(action.icao, rwy_desig) if rwy_desig else None
+
+                        if rwy is None and rwy_desig:
+                            # Try all runways for the airport
+                            runways = self.runway_lookup.runways_for(action.icao)
+                            if len(runways) == 1:
+                                rwy = runways[0]
+
+                        if rwy is None:
+                            logger.warning(
+                                f"[scheduler] RUNWAY CLOSURE: {action.icao} RWY {rwy_desig} — "
+                                f"no runway coordinates found; cannot place barriers. "
+                                f"{p.get('description','')[:80]}"
+                            )
+                            action.applied = False
+                        else:
+                            placed_count = self._place_runway_barriers(
+                                sm, action.notam_id, rwy, rwy_desig,
+                            )
+                            if placed_count > 0:
+                                logger.info(
+                                    f"[scheduler] RUNWAY CLOSED: {action.icao} RWY {rwy_desig} — "
+                                    f"{placed_count} barrier(s) placed. "
+                                    f"{p.get('description','')[:60]}"
+                                )
+                                action.applied = True
+                            else:
+                                logger.warning(
+                                    f"[scheduler] RUNWAY CLOSURE: {action.icao} RWY {rwy_desig} — "
+                                    f"barrier placement failed. {p.get('description','')[:60]}"
+                                )
+                                action.applied = False
 
                     case "set_tfr":
                         logger.warning(
@@ -368,6 +445,70 @@ class Scheduler(QObject):
             except Exception as exc:
                 logger.warning(f"[scheduler] Action {action.action_type} error: {exc}")
 
+    def _place_runway_barriers(
+        self,
+        sm: object,
+        notam_id: str,
+        rwy: "RunwayLookup.Runway",
+        rwy_desig: str,
+    ) -> int:
+        """
+        Place 3 barrier objects at each runway threshold (LE and HE), inset
+        ~30 m inside the outer end and spread perpendicular to the centreline.
+        Returns the total number of objects placed (up to 6).
+        """
+        import math
+        import random
+
+        heading = rwy.le_heading or 0.0
+        INSET_M = random.uniform(20, 60)  # metres inside from the threshold tip
+
+        barrier_entry = self.object_placer.entry_for_kind("runway_closure")
+        placed = 0
+
+        ends = [
+            ("le", rwy.le_lat, rwy.le_lon, math.radians(heading)),
+            ("he", rwy.he_lat, rwy.he_lon, math.radians((heading + 180) % 360)),
+        ]
+
+        for end_tag, end_lat, end_lon, along_rad in ends:
+            # Step inward along the centreline from this threshold
+            anchor_lat = end_lat + (INSET_M * math.cos(along_rad)) / 111139.0
+            anchor_lon = end_lon + (INSET_M * math.sin(along_rad)) / (
+                111139.0 * math.cos(math.radians(end_lat))
+            )
+
+            # 3D barrier object (wind turbine placeholder)
+            ok = self.object_placer.place(
+                sm,
+                notam_id=f"{notam_id}-rwybar-{end_tag}",
+                lat=anchor_lat,
+                lon=anchor_lon,
+                alt_ft=0,
+                lit=True,
+                on_ground=True,
+                heading=heading,
+                obstacle_kind="runway_closure",
+                titles_to_try=barrier_entry.titles,
+            )
+            if ok:
+                placed += 1
+
+        return placed
+
+    def _format_notam_valid_until(self, notam: Notam) -> str:
+        """Return validity text in UTC for overlay display."""
+        if notam.valid_to is None:
+            return "until PERM"
+        dt_utc = notam.valid_to.astimezone(timezone.utc)
+        return f"until {dt_utc.strftime('%d.%m.%Y %H:%M')} Z"
+
+    def _format_overlay_title(self, notam: Notam, badge: str) -> str:
+        """Build a user-friendly title, e.g. 'EDFE — Aerodrome Restricted (A1234/26)'."""
+        subject_label = notam.subject.name.replace("_", " ").title()
+        cond_label = notam.condition.name.replace("_", " ").title()
+        return f"{subject_label} {cond_label} ({notam.id}){badge}"
+
     def _notify_approaching_notams(
         self,
         notams: list[Notam],
@@ -383,6 +524,8 @@ class Scheduler(QObject):
 
         candidates: list[tuple[float, Notam]] = []
         for n in notams:
+            if not n.is_active:
+                continue
             lat = n.lat
             lon = n.lon
             if lat is None or lon is None:
@@ -407,18 +550,27 @@ class Scheduler(QObject):
             f"[scheduler] NOTAM alert candidates: {len(candidates)} "
             f"within {radius:.1f}nm (sm={'yes' if sm is not None else 'no'})"
         )
-        # Rebuild overlay from current in-range candidates only.
-        self.alert_overlay_clear.emit()
+
+        if not candidates:
+            # Keep last shown alert view instead of pushing an empty frame.
+            self.notifier.pump(sm)
+            return
         # Build a lookup of notam_id → action (for injection status badge)
         action_by_id: dict[str, MsfsAction] = {a.notam_id: a for a in self._current_actions}
 
+        overlay_payload: list[tuple[str, str, float, str, str, str, bool]] = []
+        pop_up = False
+
         for dist_nm, n in candidates:
             desc = (n.description or n.raw).strip()[:200]
-            text = f"[{n.subject.name}] {desc}" if desc else f"[{n.subject.name}] NOTAM {n.id}"
+            valid_until = self._format_notam_valid_until(n)
+            text = (
+                f"{valid_until}\n[{n.subject.name}] {desc}"
+                if desc
+                else f"{valid_until}\n[{n.subject.name}] NOTAM {n.id}"
+            )
             queued = self.notifier.queue_notam(n.id, n.icao, text)
 
-            subject_label = n.subject.name
-            cond_label = n.condition.name
             action = action_by_id.get(n.id)
             if action is None:
                 badge = ""                         # informational NOTAM, no sim action
@@ -426,18 +578,23 @@ class Scheduler(QObject):
                 badge = "  ✓ injected"
             else:
                 badge = "  ⚠ not in sim"
-            title = f"{subject_label} {cond_label}{badge}"
+            title = self._format_overlay_title(n, badge)
             ap = self.airport_lookup.find(n.icao)
             airport_name = ap.name if ap else ""
-            self.alert_overlay.emit(
-                title,
-                text,
-                dist_nm,
-                n.icao,
-                airport_name,
-                n.subject.name,
-                queued,
+            overlay_payload.append(
+                (
+                    title,
+                    text,
+                    dist_nm,
+                    n.icao,
+                    airport_name,
+                    n.subject.name,
+                    queued,
+                )
             )
+            pop_up = pop_up or queued
+
+        self.alert_overlay_batch.emit(overlay_payload, pop_up)
 
         self.notifier.pump(sm)
 

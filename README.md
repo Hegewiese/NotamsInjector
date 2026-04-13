@@ -86,6 +86,95 @@ The output is `dist\NotamInjector.exe` — a single file that bundles Python, al
 
 ---
 
+## MSFS model inventory and validation (official-only)
+
+Use this workflow to build and verify obstacle model titles from official MSFS content.
+
+### 1. Scan official inventory roots
+
+```cmd
+python scripts/find_msfs_titles.py
+```
+
+Outputs:
+
+- `data/simobject_titles_official.txt`
+- `data/simobject_folder_candidates_official.txt`
+
+### 2. Validate candidate titles against live SimConnect
+
+Start MSFS and load into a flight, then run:
+
+```cmd
+python scripts/validate_msfs_models.py --input data/simobject_titles_official.txt --include-catalog --lat 48.3538 --lon 11.7861 --max 50
+```
+
+Output report:
+
+- `data/msfs_model_validation_report.csv`
+
+Use titles with status `ok` to update `obstacle_catalog.yaml` mappings.
+
+---
+
+## Git workflow in terminal (commit + push)
+
+From the project root, run the following commands.
+
+### 1. Verify Git is installed
+
+```powershell
+where.exe git
+```
+
+If this returns no path, install Git and reopen your terminal:
+
+```powershell
+winget install --id Git.Git -e
+```
+
+### 2. Check and stage changes
+
+```powershell
+git status
+git add .
+```
+
+### 3. Commit
+
+```powershell
+git commit -m "Describe your changes"
+```
+
+If identity is not configured yet:
+
+```powershell
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+```
+
+### 4. Push
+
+Check your branch name:
+
+```powershell
+git branch --show-current
+```
+
+First push on a branch:
+
+```powershell
+git push -u origin <branch-name>
+```
+
+Next pushes:
+
+```powershell
+git push
+```
+
+---
+
 ## Configuration
 
 Edit `config.yaml` in the application folder:
@@ -166,7 +255,16 @@ msfs-notam-injector/
 - **Runway closures** — SimConnect does not expose a runway-close API. Closures are shown in the UI but not enforced in the sim.
 - **TFRs** — Displayed for awareness; not enforced (would require a WASM module).
 - **ILS/VOR disabling** — Requires a SimConnect WASM gauge to write the relevant simulation variables; currently logs a warning.
+- **Scenery-library obstacle models** — BGL library objects (for example some Community crane packages) cannot be spawned through SimConnect `AICreateSimulatedObject`. The Python app can queue these placements, but an in-sim bridge/WASM backend is still required to render them.
 - **Windows only** — SimConnect is Windows-exclusive. The app runs in mock/log-only mode on Linux/macOS.
+
+Queued scenery-library placement intents are written to [data/scenery_library_queue.json](data/scenery_library_queue.json). See [docs/scenery_library_bridge_contract.md](docs/scenery_library_bridge_contract.md) for the bridge contract.
+
+For local debugging, you can watch queue changes with:
+
+```cmd
+python scripts/watch_scenery_queue.py
+```
 
 ---
 

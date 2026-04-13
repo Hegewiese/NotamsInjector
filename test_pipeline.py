@@ -5,8 +5,11 @@ for the mock position (London Heathrow, EGLL).
 """
 
 import asyncio
+import os
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -19,7 +22,29 @@ MOCK_LAT, MOCK_LON = 47.2602, 11.3439  # LOWI — Innsbruck Airport
 RADIUS_NM = 50.0
 
 
-async def main():
+def test_airport_lookup_returns_nearby_airports():
+    lookup = AirportLookup()
+    airports = lookup.within_radius(MOCK_LAT, MOCK_LON, RADIUS_NM)
+
+    assert airports, "Expected airports within radius around LOWI"
+    assert any(a.icao == "LOWI" for a in airports), "Expected LOWI to be present"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.getenv("RUN_LIVE_PIPELINE") != "1",
+    reason="Live NOTAM fetch disabled. Set RUN_LIVE_PIPELINE=1 to run.",
+)
+async def test_live_pipeline_smoke():
+    result = await run_pipeline(verbose=False)
+    assert result["airports_count"] > 0
+    assert result["raw_notams_count"] >= 0
+    assert result["parsed_count"] >= 0
+    assert result["active_count"] >= 0
+    assert result["actions_count"] >= 0
+
+
+async def run_pipeline(verbose: bool = True):
     print(f"\n{'='*60}")
     print(f"  NOTAM Injector — pipeline test")
     print(f"  Position: {MOCK_LAT}, {MOCK_LON}  (Innsbruck, LOWI)")
@@ -73,6 +98,18 @@ async def main():
     print(f"{'='*60}")
     print(f"  Pipeline OK")
     print(f"{'='*60}\n")
+
+    return {
+        "airports_count": len(airports),
+        "raw_notams_count": len(raw_notams),
+        "parsed_count": len(notams),
+        "active_count": len(active),
+        "actions_count": len(actions),
+    }
+
+
+async def main():
+    await run_pipeline(verbose=True)
 
 
 if __name__ == "__main__":

@@ -9,10 +9,11 @@ Clicking a row expands/collapses the full message.
 from __future__ import annotations
 
 import html
+import math
 from typing import Callable
 
 from PySide6.QtCore import QPoint, Qt, QTimer
-from PySide6.QtGui import QGuiApplication, QMouseEvent, QShowEvent
+from PySide6.QtGui import QColor, QGuiApplication, QMouseEvent, QPainter, QPen, QShowEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -22,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.airports.lookup import AirportLookup
+from src.airports.lookup import AirportLookup, _haversine_nm
 from src.config import settings
 
 _ICAO_HEADER_STYLE = (
@@ -71,6 +72,48 @@ _AIRPORT_TYPE_LABELS = {
     "seaplane_base": "Seaplane Base",
     "small_airport": "Small Airport",
 }
+
+
+class _CircularProgressDial(QWidget):
+    """Movement dial: 0% at cycle start, 100% at minimum move."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._progress = 0
+        self.setFixedSize(20, 20)
+        self.setStyleSheet("background: transparent; border: none;")
+
+    def set_progress(self, percent: int) -> None:
+        self._progress = max(0, min(100, percent))
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        rect = self.rect()
+        center_x, center_y = rect.width() // 2, rect.height() // 2
+        radius = 8
+
+        bg_pen = QPen(QColor(80, 80, 100), 1.5)
+        painter.setPen(bg_pen)
+        painter.drawEllipse(center_x - radius, center_y - radius, radius * 2, radius * 2)
+
+        if self._progress > 0:
+            progress_pen = QPen(QColor(138, 168, 255), 1.5)
+            painter.setPen(progress_pen)
+            start_angle = 90 * 16
+            span_angle = -int((self._progress / 100.0) * 360 * 16)
+            painter.drawArc(
+                center_x - radius,
+                center_y - radius,
+                radius * 2,
+                radius * 2,
+                start_angle,
+                span_angle,
+            )
+
+        painter.end()
 
 
 class _AlertRow(QWidget):
@@ -141,7 +184,11 @@ class AlertOverlay(QWidget):
         self._alert_parent_type: dict[tuple[str, ...], tuple[str, ...] | None] = {}
         self._type_group_widgets: dict[tuple[str, ...], tuple[QLabel, QWidget, str, int, float, QWidget]] = {}
         self._airport_details_widgets: dict[str, list[QLabel]] = {}
+        self._airport_header_labels: dict[str, tuple[QLabel, str, float]] = {}
         self._airport_lookup = airport_lookup
+        self._aircraft_lat: float | None = None
+        self._aircraft_lon: float | None = None
+        self._aircraft_heading_deg: float | None = None
         self._on_open_settings: Callable[[], None] | None = None
         self._on_open_debug: Callable[[], None] | None = None
         self._details_icao: str | None = None
@@ -171,7 +218,10 @@ class AlertOverlay(QWidget):
         title_layout.setContentsMargins(0, 0, 0, 0)
         title_layout.setSpacing(4)
 
-        title_lbl = QLabel("⚠ NOTAM Alerts")
+        self._poll_dial = _CircularProgressDial()
+        title_layout.addWidget(self._poll_dial)
+
+        title_lbl = QLabel("NOTAM Alerts")
         title_lbl.setStyleSheet(
             "color:#ffffff; font-size:13px; font-weight:700;"
             " background: transparent; border: none;"
@@ -264,6 +314,29 @@ class AlertOverlay(QWidget):
         self.clear_alerts()
         self.hide()
 
+    def replace_alerts(self, alerts: list[tuple[str, str, float, str, str, str, bool]], pop_up: bool = False) -> None:
+        """Atomically replace all overlay alerts to avoid clear/add flicker."""
+        if not alerts:
+            self.clear_and_hide()
+            return
+
+        self._alerts = [
+            (dist_nm, icao.upper(), airport_name, notam_type, title, message)
+            for (title, message, dist_nm, icao, airport_name, notam_type, _is_new) in alerts
+        ]
+        self._alerts.sort(key=lambda a: a[0])
+
+        was_hidden = not self.isVisible()
+        self._rebuild_rows()
+        self._resize_height()
+        QTimer.singleShot(0, self._resize_height)
+        QTimer.singleShot(30, self._resize_height)
+
+        if was_hidden and pop_up:
+            self._reposition_top_right()
+            self.show()
+            self.raise_()
+
     def show_alert(
         self,
         title: str,
@@ -290,6 +363,20 @@ class AlertOverlay(QWidget):
             self._reposition_top_right()
             self.show()
             self.raise_()
+
+    def update_reference_position(self, lat: float, lon: float, heading_deg: float) -> None:
+        """Refresh airport distance and direction indicators on each sampled position."""
+        self._aircraft_lat = lat
+        self._aircraft_lon = lon
+        self._aircraft_heading_deg = heading_deg % 360.0
+        if not self._airport_header_labels:
+            return
+        for icao, (label, airport_name, fallback_nm) in self._airport_header_labels.items():
+            label.setText(self._format_airport_header(icao, airport_name, fallback_nm))
+
+    def update_poll_progress(self, percent: int) -> None:
+        """Update movement dial progress (0-100)."""
+        self._poll_dial.set_progress(percent)
 
     def set_action_handlers(
         self,
@@ -328,12 +415,50 @@ class AlertOverlay(QWidget):
         self._alert_parent_type.clear()
         self._type_group_widgets.clear()
         self._airport_details_widgets.clear()
+        self._airport_header_labels.clear()
         while self._rows_layout.count():
             item = self._rows_layout.takeAt(0)
             w = item.widget()
             if w:
                 w.hide()
                 w.deleteLater()
+
+    def _format_airport_header(self, icao: str, airport_name: str, fallback_nm: float) -> str:
+        dist_nm = self._distance_to_airport_nm(icao, fallback_nm)
+        name_part = f"  {airport_name}" if airport_name else ""
+        arrow = self._direction_arrow(icao)
+        arrow_part = f"  {arrow}" if arrow else ""
+        return f"{icao}{name_part}  —  {dist_nm:.1f} nm{arrow_part}"
+
+    def _distance_to_airport_nm(self, icao: str, fallback_nm: float = 0.0) -> float:
+        if self._airport_lookup is None:
+            return fallback_nm
+        if self._aircraft_lat is None or self._aircraft_lon is None:
+            return fallback_nm
+        ap = self._airport_lookup.find(icao)
+        if ap is None:
+            return fallback_nm
+        return _haversine_nm(self._aircraft_lat, self._aircraft_lon, ap.lat, ap.lon)
+
+    def _direction_arrow(self, icao: str) -> str:
+        if self._airport_lookup is None:
+            return ""
+        if self._aircraft_lat is None or self._aircraft_lon is None or self._aircraft_heading_deg is None:
+            return ""
+        ap = self._airport_lookup.find(icao)
+        if ap is None:
+            return ""
+
+        lat1 = math.radians(self._aircraft_lat)
+        lat2 = math.radians(ap.lat)
+        dlon = math.radians(ap.lon - self._aircraft_lon)
+        y = math.sin(dlon) * math.cos(lat2)
+        x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dlon)
+        bearing = (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+        rel = (bearing - self._aircraft_heading_deg + 360.0) % 360.0
+        arrows = ["↑", "↗", "→", "↘", "↓", "↙", "←", "↖"]
+        idx = int((rel + 22.5) // 45) % 8
+        return arrows[idx]
 
     def _rebuild_rows(self) -> None:
         self.setUpdatesEnabled(False)
@@ -347,12 +472,12 @@ class AlertOverlay(QWidget):
 
             ordered_groups: list[tuple[str, list[tuple[float, str, str, str, str, str]]]] = sorted(
                 groups.items(),
-                key=lambda item: min(a[0] for a in item[1]),
+                key=lambda item: min(self._distance_to_airport_nm(a[1], a[0]) for a in item[1]),
             )
 
             first_group = True
             for icao, group in ordered_groups:
-                group.sort(key=lambda a: (a[3], a[0]))
+                group.sort(key=lambda a: (a[3], self._distance_to_airport_nm(a[1], a[0])))
 
                 if not first_group:
                     sep = QLabel()
@@ -361,9 +486,8 @@ class AlertOverlay(QWidget):
                     self._rows_layout.addWidget(sep)
                 first_group = False
 
-                min_dist = min(a[0] for a in group)
+                min_dist = min(self._distance_to_airport_nm(a[1], a[0]) for a in group)
                 airport_name = group[0][2]   # same for all entries in this group
-                name_part = f"  {airport_name}" if airport_name else ""
                 airport_block = QWidget()
                 airport_block.setStyleSheet(_AIRPORT_BOX_STYLE)
                 airport_layout = QVBoxLayout(airport_block)
@@ -371,7 +495,7 @@ class AlertOverlay(QWidget):
                 airport_layout.setSpacing(0)
                 airport_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-                airport_lbl = QLabel(f"{icao}{name_part}  —  {min_dist:.1f} nm")
+                airport_lbl = QLabel(self._format_airport_header(icao, airport_name, min_dist))
                 airport_lbl.setStyleSheet(_ICAO_HEADER_STYLE)
                 airport_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
                 airport_lbl.setMinimumHeight(_AIRPORT_HEADER_MIN_HEIGHT)
@@ -380,6 +504,7 @@ class AlertOverlay(QWidget):
                     lambda _e, airport_icao=icao: self._show_airport_details(airport_icao)
                 )
                 airport_layout.addWidget(airport_lbl)
+                self._airport_header_labels[icao] = (airport_lbl, airport_name, min_dist)
 
                 details = self._build_airport_details_lines(icao)
                 if details:
@@ -417,10 +542,10 @@ class AlertOverlay(QWidget):
                     )
 
                     for type_name, type_alerts in ordered_types:
-                        type_alerts.sort(key=lambda a: a[0])
+                        type_alerts.sort(key=lambda a: self._distance_to_airport_nm(a[1], a[0]))
                         group_key = ("type", icao, type_name)
                         expanded = self._expanded_type_key == group_key
-                        nearest = min(a[0] for a in type_alerts)
+                        nearest = min(self._distance_to_airport_nm(a[1], a[0]) for a in type_alerts)
 
                         type_block = QWidget()
                         type_block.setMinimumHeight(_TYPE_HEADER_MIN_HEIGHT)

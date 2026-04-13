@@ -6,7 +6,7 @@ Loguru is wired to write into this widget via a custom sink.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal, QObject
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QColor, QFont, QTextCursor
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QPlainTextEdit,

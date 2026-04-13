@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python main.py)",
+      "Bash(python scripts/build_rwy_x_package.py)",
+      "Bash(\"C:\\\\MSFS 2024 SDK\\\\Tools\\\\bin\\\\fspackagetool.exe\")"
+    ]
+  }
+}

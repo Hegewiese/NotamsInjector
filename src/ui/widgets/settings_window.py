@@ -17,11 +17,11 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
-    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -29,6 +29,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+import sys
 
 from src.config import Settings, settings
 
@@ -57,41 +59,33 @@ class _FieldSpec:
 
 
 _GROUP_ORDER = (
-    "SimConnect",
-    "Fetch & Cache",
+    "Notams Fetching",
     "MSFS Actions",
-    "Alerts",
+    "Notam Alert Window",
     "Logging",
 )
 
 _FIELD_SPECS: tuple[_FieldSpec, ...] = (
-    _FieldSpec("position_poll_interval_s", "Position Poll Interval (s)", "SimConnect", "combo_int",
-        options=("20", "30", "45", "60"),
+    _FieldSpec("position_poll_interval_s", "Position Poll Interval (s)", "Notams Fetching", "combo_int",
+        options=("5", "10", "20", "30", "45", "60"),
         tooltip="How often (in seconds) the app reads your aircraft position from MSFS via SimConnect.\nLower values give more responsive NOTAM updates but use slightly more CPU."),
-    _FieldSpec("min_move_nm", "Minimum Move (nm)", "SimConnect", "slider_float",
-        minimum=2.0, maximum=10.0, step=0.5, decimals=1,
+    _FieldSpec("min_move_nm", "Minimum Move (nm)", "Notams Fetching", "slider_float",
+        minimum=2.0, maximum=10.0, step=1.0, decimals=1,
         tooltip="The minimum distance (nautical miles) you must travel before a new NOTAM fetch is triggered by movement.\nPrevents unnecessary re-fetches during minor position jitter on the ground."),
-    _FieldSpec("notam_radius_nm", "Fetch Radius (nm)", "SimConnect", "slider_float",
+    _FieldSpec("notam_radius_nm", "Fetch Radius (nm)", "Notams Fetching", "slider_float",
         minimum=25.0, maximum=75.0, step=1.0, decimals=1,
         tooltip="The radius around your aircraft (nautical miles) used to find nearby airports whose NOTAMs should be fetched.\nLarger values show more NOTAMs but increase network load."),
-
-    _FieldSpec("notam_refresh_interval_min", "Refresh Interval (min)", "Fetch & Cache", "slider_float",
-        minimum=1.0, maximum=240.0, step=1.0, decimals=0,
-        tooltip="How often (in minutes) the app automatically re-fetches NOTAMs even without moving.\nKeeps NOTAM data current during long flights or stationary sessions."),
-    _FieldSpec("notam_cache_ttl_min", "Cache TTL (min)", "Fetch & Cache", "slider_float",
-        minimum=1.0, maximum=720.0, step=5.0, decimals=0,
-        tooltip="How long (in minutes) a cached NOTAM result is considered valid before being discarded.\nIncreasing this reduces repeated network requests for the same airports."),
-    _FieldSpec("max_notam_age_h", "Max NOTAM Age (h)", "Fetch & Cache", "slider_float",
+    _FieldSpec("max_notam_age_h", "Max NOTAM Age (h)", "Notams Fetching", "slider_float",
         minimum=1.0, maximum=168.0, step=1.0, decimals=0,
         tooltip="NOTAMs older than this value (in hours) are ignored even if still technically active.\nHelps filter out very old NOTAMs that are unlikely to be relevant to your flight."),
-    _FieldSpec("notam_movement_refetch_cooldown_s", "Movement Refetch Cooldown (s)", "Fetch & Cache", "slider_float",
+    _FieldSpec("notam_movement_refetch_cooldown_s", "Movement Refetch Cooldown (s)", "Notams Fetching", "slider_float",
         minimum=0.0, maximum=7200.0, step=30.0, decimals=0,
         tooltip="Minimum time (in seconds) that must pass between two movement-triggered fetches.\nPrevents fetch storms if you are moving continuously; set to 0 to disable the cooldown."),
 
     _FieldSpec("auto_apply_notams", "Auto Apply NOTAM Actions", "MSFS Actions", "bool",
         tooltip="When enabled, NOTAM actions (placing obstacle objects, beacon markers, etc.) are applied automatically each fetch cycle without requiring manual confirmation."),
     _FieldSpec("obstacle_placement_radius_nm", "Obstacle Placement Radius (nm)", "MSFS Actions", "slider_float",
-        minimum=0.5, maximum=100.0, step=0.5, decimals=1,
+        minimum=5.0, maximum=30.0, step=1.0, decimals=1,
         tooltip="Maximum distance from the affected airport (nautical miles) within which obstacle SimObjects are placed in MSFS.\nNOTAMs for obstacles outside this radius are noted but not injected into the sim."),
     _FieldSpec("highlight_obstacle_objects", "Highlight Obstacle Objects", "MSFS Actions", "bool",
         tooltip="When enabled, obstacle objects placed in MSFS are visually highlighted with a set of vertical beacon markers to make them easy to spot from the cockpit."),
@@ -104,13 +98,15 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     _FieldSpec("highlight_beacon_count", "Beacon Count", "MSFS Actions", "slider_float",
         minimum=1.0, maximum=20.0, step=1.0, decimals=0,
         tooltip="Number of beacon marker objects stacked vertically above each highlighted obstacle.\nMore beacons make the obstacle more visible but also add more SimObjects to the sim."),
+    _FieldSpec("msfs_status_dialog_enabled", "Show MSFS Status Dialog", "MSFS Actions", "bool",
+        tooltip="When enabled, a startup status dialog is shown until MSFS is running and a valid in-flight position is received.\nDisable this if you never want to see the startup dialog."),
 
-    _FieldSpec("notam_alert_enabled", "Enable In-Sim NOTAM Popups", "Alerts", "bool",
+    _FieldSpec("notam_alert_enabled", "Enable In-Sim NOTAM Popups", "Notam Alert Window", "bool",
         tooltip="When enabled, approaching NOTAMs trigger a text notification inside MSFS via SimConnect.\nUseful for heads-up alerts without switching to the overlay window."),
-    _FieldSpec("notam_alert_radius_nm", "Alert Radius (nm)", "Alerts", "slider_float",
+    _FieldSpec("notam_alert_radius_nm", "Alert Radius (nm)", "Notam Alert Window", "slider_float",
         minimum=10.0, maximum=75.0, step=1.0, decimals=1,
         tooltip="Distance (nautical miles) from a NOTAM location at which an in-sim alert is triggered.\nSmaller values only alert when you are very close; larger values give earlier warnings."),
-    _FieldSpec("alert_window_opacity", "Alert Window Opacity", "Alerts", "slider_float",
+    _FieldSpec("alert_window_opacity", "Alert Window Opacity", "Notam Alert Window", "slider_float",
         minimum=0.1, maximum=1.0, step=0.01, decimals=2,
         tooltip="Transparency of the NOTAM Alerts overlay window (1.0 = fully opaque, 0.1 = nearly invisible).\nLower opacity lets you see the sim through the window during flight."),
 
@@ -182,8 +178,8 @@ class SettingsWindow(QWidget):
         apply_btn.clicked.connect(self._apply_values)
 
         buttons = QHBoxLayout()
-        buttons.addWidget(reload_btn)
         buttons.addStretch()
+        buttons.addWidget(reload_btn)
         buttons.addWidget(apply_btn)
 
         self._status = QLabel("")
@@ -420,15 +416,49 @@ class SettingsWindow(QWidget):
             self._on_apply(dumped)
 
         changed = [k for k, v in dumped.items() if previous.get(k) != v]
-        restart_changed = [spec.label for spec in _FIELD_SPECS if spec.restart_required and spec.key in changed]
+        restart_changed = [spec for spec in _FIELD_SPECS if spec.restart_required and spec.key in changed]
 
         self._status.setStyleSheet("color:#b0d8b0; font-size:11px;")
         if restart_changed:
-            self._status.setText("Applied. Restart required for: " + ", ".join(restart_changed))
+            restart_labels = [spec.label for spec in restart_changed]
+            reply = QMessageBox.question(
+                self,
+                "Restart Required",
+                f"The following settings require a restart to take effect:\n\n" + ", ".join(restart_labels) + "\n\nRestart the application now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._restart_application()
+            else:
+                self._status.setText("Applied. Restart required for: " + ", ".join(restart_labels))
         elif changed:
             self._status.setText("Applied and saved to config.yaml")
         else:
             self._status.setText("No changes to apply")
+
+    def _restart_application(self) -> None:
+        """Restart the application via QProcess (mirrors TrayIcon._restart_application)."""
+        from PySide6.QtCore import QProcess
+        from PySide6.QtWidgets import QApplication
+        try:
+            self.hide()
+            # Stop scheduler and clean up SimObjects before exit
+            app = QApplication.instance()
+            tray = getattr(app, '_tray_icon', None)
+            if tray and hasattr(tray, '_clean_shutdown'):
+                tray._clean_shutdown()
+            if getattr(sys, 'frozen', False):
+                cmd = [sys.executable, *sys.argv[1:]]
+            else:
+                cmd = [sys.executable, *sys.argv]
+            started = QProcess.startDetached(cmd[0], cmd[1:], str(Path.cwd()))
+            if not started:
+                raise RuntimeError('detached process launch failed')
+            QApplication.quit()
+        except Exception as exc:
+            self._status.setStyleSheet("color:#ffaaaa; font-size:11px;")
+            self._status.setText(f"Restart failed: {exc}")
 
     @staticmethod
     def _to_yaml_text(values: dict[str, Any]) -> str:

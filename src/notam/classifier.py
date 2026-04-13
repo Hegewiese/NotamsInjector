@@ -8,9 +8,17 @@ implemented in src/msfs/.
 
 from __future__ import annotations
 
+import re
+
 from loguru import logger
 
 from .models import MsfsAction, Notam, NotamCondition, NotamSubject
+
+# Runway designator pattern: "RWY 09L/27R", "RWY 09/27", "RUNWAY 09", "RWY 09L"
+_RUNWAY_DESIGNATOR = re.compile(
+    r"(?:RWY|RUNWAY)\s+(\d{2}[LCR]?)(?:\s*/\s*(\d{2}[LCR]?))?",
+    re.IGNORECASE,
+)
 
 # Natural features that cannot be represented as placed objects in MSFS
 _NATURAL_KEYWORDS = {
@@ -22,6 +30,14 @@ _NATURAL_KEYWORDS = {
 _LIT_KEYWORDS     = {"NIGHT", "LGTD", "LIGHTED", "LIT"}
 # Keywords that confirm it is NOT lit at night
 _UNLIT_KEYWORDS   = {"UNMARKED", "UNLIT", "UNLIGHTED"}
+
+_OBSTACLE_KIND_KEYWORDS: dict[str, set[str]] = {
+    "crane": {"CRANE", "CRANES", "TOWER CRANE", "MOBILE CRANE"},
+    "mast_tower_antenna": {"MAST", "MASTS", "TOWER", "TOWERS", "ANTENNA", "ANTENNAS", "POLE", "POLES"},
+    "wind_turbine": {"WINDMILL", "WINDMILLS", "TURBINE", "TURBINES", "WIND TURBINE"},
+    "chimney_stack": {"CHIMNEY", "CHIMNEYS", "STACK", "STACKS", "FLARE STACK"},
+    "building": {"BUILDING", "BUILDINGS"},
+}
 
 # Keywords in the E-field that indicate a facility is out of service,
 # used to override an incorrect Q-line condition code (some military
@@ -61,6 +77,20 @@ def _is_lit(description: str) -> bool:
 
     # Default: assume lit (safer for aviation)
     return True
+
+
+def _classify_obstacle_kind(description: str) -> tuple[str, str]:
+    """Return (obstacle_kind, confidence) from free-text NOTAM description."""
+    text = (description or "").upper()
+
+    for kind, needles in _OBSTACLE_KIND_KEYWORDS.items():
+        for needle in needles:
+            if needle in text:
+                return kind, "high"
+
+    if "OBST" in text:
+        return "generic_obstacle", "medium"
+    return "generic_obstacle", "low"
 
 
 def classify(notam: Notam) -> MsfsAction | None:
@@ -111,11 +141,20 @@ def classify(notam: Notam) -> MsfsAction | None:
 
         case NotamSubject.RUNWAY:
             if notam.condition == NotamCondition.CLOSED:
+                rwy_match = _RUNWAY_DESIGNATOR.search(notam.description)
+                rwy_designator = ""
+                if rwy_match:
+                    rwy_designator = rwy_match.group(1).upper()
+                    if rwy_match.group(2):
+                        rwy_designator += "/" + rwy_match.group(2).upper()
                 return MsfsAction(
                     notam_id=notam.id,
                     action_type="close_runway",
                     icao=notam.icao,
-                    params={"description": notam.description},
+                    params={
+                        "runway_designator": rwy_designator,
+                        "description": notam.description,
+                    },
                 )
 
         case NotamSubject.OBSTACLE:
@@ -126,6 +165,7 @@ def classify(notam: Notam) -> MsfsAction | None:
                         f"(trees/vegetation — not placeable in MSFS)"
                     )
                     return None
+                obstacle_kind, obstacle_confidence = _classify_obstacle_kind(notam.description)
                 return MsfsAction(
                     notam_id=notam.id,
                     action_type="place_obstacle",
@@ -135,6 +175,8 @@ def classify(notam: Notam) -> MsfsAction | None:
                         "lon": notam.lon,
                         "upper_ft": notam.upper_ft,
                         "lit": _is_lit(notam.description),
+                        "obstacle_kind": obstacle_kind,
+                        "obstacle_confidence": obstacle_confidence,
                         "description": notam.description,
                     },
                 )
