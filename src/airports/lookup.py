@@ -1,10 +1,17 @@
 """
-Local airport lookup using the OurAirports dataset.
+Local airport lookup using the OurAirports dataset, enriched with OpenAIP data.
 
 airports.csv is downloaded automatically on first run if it is not present.
 
 Only medium and large airports are indexed by default to keep the
 spatial search fast and avoid flooding NOTAM APIs with tiny strips.
+
+OpenAIP enrichment
+------------------
+After the CSV is loaded, ``enrich_from_openaip()`` can be called with a
+dict of OpenAIP records (keyed by ICAO).  This fills the optional fields
+(frequencies, ppr, fuel_types, contact, remarks) without touching the
+OurAirports-sourced position and runway data.
 """
 
 from __future__ import annotations
@@ -12,8 +19,9 @@ from __future__ import annotations
 import csv
 import math
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -26,8 +34,9 @@ _RUNWAYS_URL = "https://davidmegginson.github.io/ourairports-data/runways.csv"
 INCLUDED_TYPES = {"medium_airport", "large_airport", "small_airport"}
 
 
-@dataclass(slots=True)
+@dataclass
 class Airport:
+    # ── OurAirports fields (always present) ───────────────────────────────────
     icao: str
     name: str
     lat: float
@@ -40,6 +49,15 @@ class Airport:
     elevation_ft: int | None
     home_link: str
     wikipedia_link: str
+
+    # ── OpenAIP enrichment fields (filled by enrich_from_openaip) ─────────────
+    ppr:         bool            = False   # Prior Permission Required
+    private:     bool            = False
+    frequencies: list[dict]      = field(default_factory=list)
+    fuel_types:  list[int]       = field(default_factory=list)
+    contact:     str             = ""
+    remarks:     str             = ""
+    openaip_id:  str             = ""
 
 
 def _haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -54,12 +72,15 @@ def _haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 class AirportLookup:
     """
-    In-memory airport database loaded from airports.csv.
+    In-memory airport database loaded from airports.csv,
+    optionally enriched with OpenAIP data.
+
     Typical load time: <1 s for ~70 k entries.
     """
 
     def __init__(self, csv_path: Path = DATA_PATH) -> None:
         self._airports: list[Airport] = []
+        self._index:    dict[str, Airport] = {}   # ICAO → Airport (fast lookup)
         self._load(csv_path)
 
     def _download(self, csv_path: Path) -> None:
@@ -99,24 +120,50 @@ class AirportLookup:
                 except (TypeError, ValueError):
                     elevation_ft = None
 
-                self._airports.append(
-                    Airport(
-                        icao=icao,
-                        name=row.get("name", ""),
-                        lat=lat,
-                        lon=lon,
-                        type=row.get("type", ""),
-                        country=row.get("iso_country", ""),
-                        municipality=row.get("municipality", ""),
-                        region=row.get("iso_region", ""),
-                        continent=row.get("continent", ""),
-                        elevation_ft=elevation_ft,
-                        home_link=row.get("home_link", ""),
-                        wikipedia_link=row.get("wikipedia_link", ""),
-                    )
+                ap = Airport(
+                    icao=icao,
+                    name=row.get("name", ""),
+                    lat=lat,
+                    lon=lon,
+                    type=row.get("type", ""),
+                    country=row.get("iso_country", ""),
+                    municipality=row.get("municipality", ""),
+                    region=row.get("iso_region", ""),
+                    continent=row.get("continent", ""),
+                    elevation_ft=elevation_ft,
+                    home_link=row.get("home_link", ""),
+                    wikipedia_link=row.get("wikipedia_link", ""),
                 )
+                self._airports.append(ap)
+                self._index[icao] = ap
 
         logger.info(f"Loaded {len(self._airports):,} airports from {csv_path.name}")
+
+    def enrich_from_openaip(self, enrichments: dict[str, dict]) -> int:
+        """
+        Apply OpenAIP enrichment data to in-memory Airport objects.
+
+        ``enrichments`` is a dict {icao: record} as returned by
+        ``OpenAIPFetcher.get_enrichments_bulk()``.
+
+        Returns the number of airports enriched.
+        """
+        count = 0
+        for icao, rec in enrichments.items():
+            ap = self._index.get(icao.upper())
+            if ap is None:
+                continue
+            ap.ppr         = rec.get("ppr", False)
+            ap.private     = rec.get("private", False)
+            ap.frequencies = rec.get("frequencies", [])
+            ap.fuel_types  = rec.get("fuel_types", [])
+            ap.contact     = rec.get("contact", "")
+            ap.remarks     = rec.get("remarks", "")
+            ap.openaip_id  = rec.get("openaip_id", "")
+            count += 1
+        if count:
+            logger.debug(f"[openaip] Enriched {count} airports with OpenAIP data")
+        return count
 
     def within_radius(self, lat: float, lon: float, radius_nm: float) -> list[Airport]:
         """Return all airports within *radius_nm* of the given coordinates."""
@@ -130,11 +177,7 @@ class AirportLookup:
         return [ap.icao for ap in self.within_radius(lat, lon, radius_nm)]
 
     def find(self, icao: str) -> Airport | None:
-        icao = icao.upper().strip()
-        for ap in self._airports:
-            if ap.icao == icao:
-                return ap
-        return None
+        return self._index.get(icao.upper().strip())
 
     @property
     def loaded(self) -> bool:

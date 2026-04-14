@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
-from pydantic_settings import PydanticBaseSettingsSource
+from pydantic_settings import PydanticBaseSettingsSource, EnvSettingsSource
 
 
 class Settings(BaseSettings):
@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     # NOTAM sources
     notams_online_enabled: bool = True
     checkwx_api_key: str = ""
+    openaip_api_key: str = ""
 
     # Behaviour
     auto_apply_notams: bool = True
@@ -31,6 +32,9 @@ class Settings(BaseSettings):
     alert_window_opacity: float = 0.7          # 0.7 = 30% transparent for NOTAM alert overlay
     msfs_status_dialog_enabled: bool = True    # show startup MSFS status dialog until valid position
 
+    # OpenAIP enrichment
+    openaip_countries: list[str] = ["DE", "AT", "CH", "NL", "BE", "LU", "FR", "PL", "CZ", "DK"]
+
     # WASM integration
     wasm_state_file: str = "navaid_overrides.json"   # WASM module reads this for override state
 
@@ -38,7 +42,12 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_file: str = "notam_injector.log"
 
-    model_config = SettingsConfigDict(yaml_file="config.yaml", extra="ignore")
+    model_config = SettingsConfigDict(
+        yaml_file="config.yaml",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     @classmethod
     def settings_customise_sources(
@@ -49,9 +58,11 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Priority (highest first): env vars → .env file → config.yaml → defaults
         return (
             init_settings,
             env_settings,
+            dotenv_settings,
             YamlConfigSettingsSource(settings_cls),
         )
 

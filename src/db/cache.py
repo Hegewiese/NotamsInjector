@@ -18,6 +18,7 @@ from typing import Optional
 import aiosqlite
 from loguru import logger
 
+from src.airports.openaip import CREATE_OPENAIP_AIRPORTS, CREATE_OPENAIP_META
 from src.notam.models import MsfsAction, Notam, NotamCondition, NotamSubject
 
 DB_PATH = Path("notam_cache.db")
@@ -116,8 +117,15 @@ class NotamCache:
         await self._db.execute(_CREATE_NOTAMS)
         await self._db.execute(_CREATE_ACTIONS)
         await self._db.execute(_CREATE_AIRPORT_FETCHES)
+        await self._db.execute(CREATE_OPENAIP_AIRPORTS)
+        await self._db.execute(CREATE_OPENAIP_META)
         await self._db.commit()
         logger.info(f"NOTAM cache initialised at {self.db_path}")
+
+    @property
+    def connection(self) -> aiosqlite.Connection:
+        """Raw DB connection — used by OpenAIPFetcher."""
+        return self._db
 
     async def close(self) -> None:
         if self._db:

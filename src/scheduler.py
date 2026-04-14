@@ -29,6 +29,7 @@ from loguru import logger
 from PySide6.QtCore import QObject, Signal
 
 from src.airports.lookup import AirportLookup, RunwayLookup, _haversine_nm
+from src.airports.openaip import OpenAIPFetcher
 from src.config import settings
 from src.db.cache import NotamCache
 from src.msfs.connector import SimConnectWrapper
@@ -67,6 +68,7 @@ class Scheduler(QObject):
         self.airport_lookup = AirportLookup()
         self.runway_lookup  = RunwayLookup()
         self.cache          = NotamCache()
+        self.openaip:       OpenAIPFetcher | None = None   # set after DB init
         self.fetcher        = build_aggregator(
             notams_online_enabled=settings.notams_online_enabled,
             checkwx_api_key=settings.checkwx_api_key,
@@ -175,9 +177,35 @@ class Scheduler(QObject):
 
     async def _init_async(self) -> None:
         await self.cache.init()
+
+        # Boot OpenAIP enrichment: check AIRAC age, sync stale countries in background
+        self.openaip = OpenAIPFetcher(self.cache.connection)
+        await self.openaip.ensure_fresh(settings.openaip_countries)
+
+        # Enrich in-memory airports with whatever is already in the DB
+        await self._enrich_airports()
+
         self._ready.set()
         # Start the periodic NOTAM refresh timer
         self._refresh_task = asyncio.create_task(self._periodic_refresh())
+
+    async def _enrich_airports(self) -> None:
+        """Load OpenAIP enrichment from SQLite and apply to AirportLookup."""
+        if self.openaip is None:
+            return
+        try:
+            # Fetch all stored ICAO codes from the enrichment table
+            cur = await self.cache.connection.execute(
+                "SELECT icao FROM openaip_airports"
+            )
+            rows = await cur.fetchall()
+            icao_codes = [r["icao"] for r in rows]
+            if not icao_codes:
+                return
+            enrichments = await self.openaip.get_enrichments_bulk(icao_codes)
+            self.airport_lookup.enrich_from_openaip(enrichments)
+        except Exception as exc:
+            logger.warning(f"[openaip] Enrichment apply failed: {exc}")
 
     async def _periodic_refresh(self) -> None:
         """Periodic pipeline run; fetches only newly encountered ICAOs."""
